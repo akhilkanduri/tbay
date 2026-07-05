@@ -1,0 +1,73 @@
+# Copy this file, trim it down to the policies you actually need, and pass
+# it to TbayClient(db_url, policy_file="policy.yaml"). Any policy you don't
+# override here still falls back to the built-in defaults in
+# src/tbay/policy.py, so most projects only need to override a field or two.
+
+policies:
+  # Safe to call repeatedly and safe to serve a slightly stale answer for.
+  # A GitHub search, a weather lookup, a read-only database query.
+  readonly:
+    cache_ttl: 5m              # a fresh call only happens once this long has passed
+    singleflight: true          # 20 identical concurrent calls become 1 real call, 19 followers
+    max_retries: 2              # a *later* call gets to retry a call that failed
+    retry_backoff: 1s            # ...but only after waiting this long since the failure
+
+  # Has a real effect (creates a ticket, sends an email) but is safe to run
+  # exactly once per unique input. Calling it twice with the same arguments
+  # must never double-charge, double-send, or double-create.
+  mutating:
+    idempotent: true             # once it succeeds for a given key, that result is final
+    cache_ttl: 0                 # 0/omitted means "keep the result forever", not "don't cache"
+    max_retries: 0                # a failed mutating call is NOT retried automatically
+
+  # Has a real-world consequence someone should sign off on before it happens:
+  # a refund, a production deploy, an email blast. Pauses until a human runs
+  # `tbay approve <execution_id>` (or `tbay reject <execution_id>`).
+  destructive:
+    idempotent: true
+    approval_required: true
+    approval_timeout: 1h          # give up waiting for a human after this long
+
+    # Optional: fire an HTTP POST when a call starts waiting for approval, so
+    # a human finds out without having to poll `tbay log` themselves. The
+    # POST body is {"execution_id": "...", "tool_name": "..."}, so look the
+    # execution up with `tbay log --tool <tool_name>` to see its (possibly
+    # redacted) arguments before deciding. This is best-effort: if the
+    # webhook URL is unreachable or returns an error, tbay ignores it and
+    # the call still waits normally. `tbay approve`/`tbay reject` always
+    # work regardless of whether the webhook fired.
+    approval_webhook: null        # e.g. "https://hooks.slack.com/services/XXX"
+
+    # Optional: skip approval automatically for small/low-risk calls, and
+    # only pause the ones above a threshold. Here, refunds of $50 or less go
+    # straight through; anything larger still waits for a human. Remove both
+    # lines to require approval for every call regardless of size.
+    approval_bypass_arg: amount
+    approval_bypass_max: 50
+
+    # Optional: never store these argument names in the audit log. Useful
+    # when a destructive tool's arguments include something sensitive that
+    # an approver doesn't need to see verbatim.
+    redact_args: [card_number, ssn]
+
+  # For tool calls that should run fresh every single time, even with
+  # identical arguments: an LLM call used to make a decision, "roll a die",
+  # "get the current time", anything where two calls with the same input
+  # are NOT the same call. idempotent: false turns off caching, dedup, and
+  # singleflight entirely: every call is its own execution.
+  volatile:
+    idempotent: false
+    max_retries: 1                 # on failure, just try again from scratch
+    retry_backoff: 0.5              # seconds; durations also accept a plain number like this
+
+  # Example combining the throughput guardrails: cap how often a tool can be
+  # called at all (regardless of arguments) and how many calls can be
+  # in flight to it at once. Useful for a paid/rate-limited external API
+  # that a runaway agent loop could otherwise hammer.
+  rate_limited_api:
+    rate_limit:
+      max_calls: 30
+      per: 1m
+    max_concurrent: 3               # a 4th caller waits for a slot instead of piling on
+    concurrency_wait_timeout: 30s   # ...but gives up and raises after this long
+    execution_timeout: 10s          # and any single call that hangs past this is marked failed

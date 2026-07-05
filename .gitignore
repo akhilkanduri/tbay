@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+.pytest_cache/
+build/
+dist/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.DS_Store
+.claude/
+.agents/
