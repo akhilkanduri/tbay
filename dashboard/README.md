@@ -1,4 +1,4 @@
-# tbay monitor
+# toolbay monitor
 
 A small, standalone web dashboard for watching what your agents' tool calls
 are doing. It is intentionally NOT part of the `tbay` Python package: it's
@@ -63,7 +63,8 @@ port is taken locally, VS Code maps it to a nearby free one and shows it
 there).
 
 Inside the container it's even shorter, because `TBAY_DASHBOARD_DBS` is
-already set:
+already set to the bundled Postgres and Redis (the container never uses
+SQLite; everything in it runs on Postgres):
 
 ```
 uv run python dashboard/app.py
@@ -73,7 +74,7 @@ After changing anything under `.devcontainer/`, run "Dev Containers:
 Rebuild Container" for it to take effect.
 
 Run an example in a second terminal (`uv run python
-examples/plain_python_demo.py`) and watch its calls appear live, including
+examples/demo.py`) and watch its calls appear live, including
 the large refund pausing in WAITING_APPROVAL, which you can approve from
 the page instead of the CLI.
 

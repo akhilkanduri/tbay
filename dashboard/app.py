@@ -149,7 +149,7 @@ PAGE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>tbay monitor</title>
+<title>toolbay monitor</title>
 <style>
   :root {
     --bg: #0d1117; --panel: #161b22; --border: #2d333b; --text: #e6edf3;
@@ -205,7 +205,7 @@ PAGE = r"""<!doctype html>
 </style>
 </head>
 <body>
-  <h1><span class="dot"></span>tbay monitor <span id="paused" class="muted" style="font-size:12px"></span></h1>
+  <h1><span class="dot"></span>toolbay monitor <span id="paused" class="muted" style="font-size:12px"></span></h1>
   <div class="sources" id="sources"></div>
 
   <div class="cards">
@@ -226,7 +226,7 @@ PAGE = r"""<!doctype html>
       <option>RUNNING</option><option>WAITING_APPROVAL</option>
       <option>SUCCEEDED</option><option>FAILED</option>
     </select>
-    <button id="pause">Pause</button>
+    <button id="pause" title="Freezes this page's auto-refresh so rows stop moving while you read. Executions themselves are not affected.">Pause refresh</button>
     <span class="muted" id="updated"></span>
   </div>
   <div class="table-wrap">
@@ -325,8 +325,8 @@ async function refresh() {
 
 document.getElementById("pause").onclick = () => {
   paused = !paused;
-  document.getElementById("pause").textContent = paused ? "Resume" : "Pause";
-  document.getElementById("paused").textContent = paused ? "(paused)" : "";
+  document.getElementById("pause").textContent = paused ? "Resume refresh" : "Pause refresh";
+  document.getElementById("paused").textContent = paused ? "(refresh paused)" : "";
 };
 document.getElementById("f-tool").oninput = refresh;
 document.getElementById("f-status").onchange = refresh;
@@ -339,7 +339,7 @@ refresh();
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="tbay monitor: observability dashboard for tbay executions")
+    parser = argparse.ArgumentParser(description="toolbay monitor: observability dashboard for tbay executions")
     parser.add_argument(
         "--db",
         action="append",
@@ -366,7 +366,7 @@ def main() -> None:
         print(f"  watching {label}  ({url.split('@')[-1] if '@' in url else url})")
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
-    print(f"\ntbay monitor running at http://{args.host}:{args.port}\n")
+    print(f"\ntoolbay monitor running at http://{args.host}:{args.port}\n")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
