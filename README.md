@@ -228,8 +228,17 @@ uv run python dashboard/app.py --db postgresql://postgres:tbay@localhost:5432/tb
 
 Then open http://localhost:8787. One dashboard can watch several backends
 at once (Postgres, Redis, SQLite, in any combination); see
-`dashboard/README.md` for all options. In the dev container it needs zero
-arguments: `uv run python dashboard/app.py`.
+`dashboard/README.md` for all options.
+
+The command above is for your own machine, with `localhost` pointing at
+servers you run. Inside the dev container, Postgres and Redis are separate
+services named `postgres` and `redis` (there is nothing on `localhost`),
+and `TBAY_DASHBOARD_DBS` is already set to the right URLs, so drop the
+`--db` flags entirely:
+
+```
+uv run python dashboard/app.py
+```
 
 ## Examples
 

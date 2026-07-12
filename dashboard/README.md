@@ -54,13 +54,21 @@ python app.py --db postgresql://... --db redis://...
 
 ## In the dev container
 
-The dev container already wires everything: `TBAY_DASHBOARD_DBS` points at
-the bundled Postgres and Redis services and port 8787 is forwarded, so
-inside the container this is the whole setup:
+Do not use the `localhost` command above inside the dev container: there,
+Postgres and Redis run as separate services reachable at the hostnames
+`postgres` and `redis`, and nothing listens on `localhost:5432`, so the
+`localhost` URLs fail with "Connection refused".
+
+Instead, the container already wires everything: `TBAY_DASHBOARD_DBS`
+points at the bundled services and port 8787 is forwarded, so inside the
+container this is the whole setup:
 
 ```
 uv run python dashboard/app.py
 ```
+
+(The explicit equivalent, if you prefer flags:
+`--db postgresql://postgres:tbay@postgres:5432/tbay --db redis://redis:6379/0`.)
 
 Run an example in a second terminal (`uv run python
 examples/plain_python_demo.py`) and watch its calls appear live, including
