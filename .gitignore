@@ -11,3 +11,5 @@ dist/
 .DS_Store
 .claude/
 .agents/
+.plans/*
+.plans/
