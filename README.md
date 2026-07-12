@@ -230,10 +230,10 @@ Then open http://localhost:8787. One dashboard can watch several backends
 at once (Postgres, Redis, SQLite, in any combination); see
 `dashboard/README.md` for all options.
 
-The dev container's Postgres and Redis listen on `localhost` both inside
-the container and (via published ports) on your machine, so the command
-above works in either place while the devcontainer is running. Inside the
-container you can also drop the `--db` flags entirely, since
+The dev container's Postgres and Redis listen on `localhost` inside the
+container, and VS Code forwards 5432/6379/8787 to your machine, so the
+command above works in either place while the devcontainer is open.
+Inside the container you can also drop the `--db` flags entirely, since
 `TBAY_DASHBOARD_DBS` is pre-wired:
 
 ```

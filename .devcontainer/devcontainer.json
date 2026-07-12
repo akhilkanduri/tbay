@@ -4,10 +4,16 @@
     "service": "dev",
     "workspaceFolder": "/workspaces/tbay",
     "postCreateCommand": "pip install --user uv && uv sync --all-extras",
-    "forwardPorts": [8787],
+    "forwardPorts": [8787, 5432, 6379],
     "portsAttributes": {
         "8787": {
             "label": "tbay monitor"
+        },
+        "5432": {
+            "label": "postgres"
+        },
+        "6379": {
+            "label": "redis"
         }
     },
     "customizations": {

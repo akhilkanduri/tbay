@@ -4,13 +4,11 @@
 #
 # Postgres and Redis share the dev container's network namespace
 # (network_mode: service:dev), so `localhost:5432` and `localhost:6379` work
-# IN the dev container terminal, and those ports are also published to your
-# host machine, so the exact same localhost URLs work OUTSIDE the container
-# too, as long as the devcontainer stack is running. One set of URLs
-# everywhere: local shell, container shell, and CI all use localhost.
-#
-# Heads up: publishing 5432/6379 conflicts with a Postgres or Redis you
-# already run on your machine; stop those (or edit the ports below) first.
+# in the dev container terminal exactly like on a machine running both
+# natively. devcontainer.json then forwards 5432, 6379, and 8787 to your
+# host through VS Code, so the same localhost URLs also work in a normal
+# terminal on your machine while the devcontainer is open (see the Ports
+# tab; VS Code picks a nearby free local port if one is already taken).
 services:
   dev:
     image: mcr.microsoft.com/devcontainers/python:3.12
@@ -25,9 +23,6 @@ services:
       TBAY_TEST_REDIS_URL: redis://localhost:6379/0
       # the monitoring dashboard (dashboard/app.py) watches these by default
       TBAY_DASHBOARD_DBS: sqlite:///~/.tbay/db.sqlite,postgresql://postgres:tbay@localhost:5432/tbay,redis://localhost:6379/0
-    ports:
-      - "5432:5432"
-      - "6379:6379"
 
   postgres:
     image: postgres:16-alpine

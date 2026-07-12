@@ -54,23 +54,23 @@ python app.py --db postgresql://... --db redis://...
 
 ## In the dev container
 
-The bundled Postgres and Redis share the dev container's network namespace
-and their ports are also published to your host machine, so the same
-`localhost:5432` / `localhost:6379` URLs work everywhere while the
-devcontainer stack is running: inside the container terminal, and outside
-in a normal terminal on your machine.
+The bundled Postgres and Redis share the dev container's network
+namespace, so `localhost:5432` / `localhost:6379` work in the container
+terminal, and devcontainer.json forwards 5432, 6379, and 8787 to your
+machine through VS Code, so the same localhost URLs also work in a normal
+terminal outside while the devcontainer is open (check the Ports tab; if a
+port is taken locally, VS Code maps it to a nearby free one and shows it
+there).
 
 Inside the container it's even shorter, because `TBAY_DASHBOARD_DBS` is
-already set and port 8787 is forwarded:
+already set:
 
 ```
 uv run python dashboard/app.py
 ```
 
-Heads up: the published ports conflict with a Postgres or Redis you
-already run locally on 5432/6379; stop those (or edit the ports in
-`.devcontainer/docker-compose.yml`) first. After changing the compose
-file, run "Dev Containers: Rebuild Container" for it to take effect.
+After changing anything under `.devcontainer/`, run "Dev Containers:
+Rebuild Container" for it to take effect.
 
 Run an example in a second terminal (`uv run python
 examples/plain_python_demo.py`) and watch its calls appear live, including
