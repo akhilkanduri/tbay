@@ -44,6 +44,14 @@ class Policy:
     # When False, tbay ignores key_fn/caching/singleflight entirely and always executes.
     singleflight: bool = True  # let concurrent identical calls share one execution instead of racing
 
+    # semantic caching: serve a stored result when a new call's arguments are
+    # merely *similar* (by embedding cosine similarity), not byte-identical.
+    # Only enable this on read-only tools; serving a "close enough" answer for
+    # a mutating call would be wrong. See src/tbay/embedders.py for how the
+    # vectors are produced and how to plug in a real embedding model.
+    semantic_cache: bool = False
+    semantic_threshold: float = 0.92  # cosine similarity a candidate must reach to count as a hit
+
     # retrying a failed call
     max_retries: int = 0  # how many times a new call may re-attempt a previously failed key
     retry_backoff: float = 0.0  # seconds to wait after a failure before a retry is allowed
@@ -111,6 +119,8 @@ def _build_policy(name: str, cfg: dict) -> Policy:
         cache_ttl=parse_ttl(cfg.get("cache_ttl")),
         idempotent=bool(cfg.get("idempotent", True)),
         singleflight=bool(cfg.get("singleflight", True)),
+        semantic_cache=bool(cfg.get("semantic_cache", False)),
+        semantic_threshold=float(cfg.get("semantic_threshold", 0.92)),
         max_retries=int(max_retries),
         retry_backoff=parse_ttl(cfg.get("retry_backoff")) or 0.0,
         approval_required=bool(cfg.get("approval_required", False)),

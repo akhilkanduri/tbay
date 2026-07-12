@@ -12,6 +12,17 @@ policies:
     max_retries: 2              # a *later* call gets to retry a call that failed
     retry_backoff: 1s            # ...but only after waiting this long since the failure
 
+  # Like readonly, but a stored answer also satisfies calls whose arguments
+  # are merely SIMILAR (embedding cosine similarity), not byte-identical:
+  # "weather in berlin today" can be served from "today weather in berlin".
+  # Only use this for read-only tools; "close enough" is wrong for a refund.
+  # The built-in embedder matches reworded-same-words queries; pass a real
+  # embedding model to TbayClient(embedder=...) for true paraphrase matching.
+  semantic_readonly:
+    cache_ttl: 5m
+    semantic_cache: true
+    semantic_threshold: 0.92    # cosine similarity a candidate must reach to count as a hit
+
   # Has a real effect (creates a ticket, sends an email) but is safe to run
   # exactly once per unique input. Calling it twice with the same arguments
   # must never double-charge, double-send, or double-create.

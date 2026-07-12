@@ -69,6 +69,8 @@ def log_cmd(ctx, tool_name, status, tenant, limit, show_args):
         line = f"{r.id}  {r.status:16s} {r.tool_name:24s} policy={r.policy_name}"
         if show_args and r.args_json:
             line += f"  args={r.args_json}"
+        if r.reasoning:
+            line += f"  reason={r.reasoning!r}"
         click.echo(line)
 
 

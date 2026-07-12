@@ -28,6 +28,15 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - uses: actions/checkout@v4
@@ -39,7 +48,8 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
 
-      - name: Run tests (SQLite + Postgres)
+      - name: Run tests (SQLite + Postgres + Redis)
         env:
           TBAY_TEST_PG_DSN: postgresql://postgres:tbay@localhost:5432/tbay
+          TBAY_TEST_REDIS_URL: redis://localhost:6379/0
         run: uv run pytest -v

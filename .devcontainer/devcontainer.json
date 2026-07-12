@@ -1,0 +1,30 @@
+{
+    "name": "tbay",
+    "dockerComposeFile": "docker-compose.yml",
+    "service": "dev",
+    "workspaceFolder": "/workspaces/tbay",
+    "postCreateCommand": "pip install --user uv && uv sync --all-extras",
+    "forwardPorts": [8787, 5432, 6379],
+    "portsAttributes": {
+        "8787": {
+            "label": "tbay monitor"
+        },
+        "5432": {
+            "label": "postgres"
+        },
+        "6379": {
+            "label": "redis"
+        }
+    },
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "charliermarsh.ruff"
+            ],
+            "settings": {
+                "python.defaultInterpreterPath": "/workspaces/tbay/.venv/bin/python"
+            }
+        }
+    }
+}
