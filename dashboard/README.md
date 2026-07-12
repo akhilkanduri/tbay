@@ -74,7 +74,7 @@ After changing anything under `.devcontainer/`, run "Dev Containers:
 Rebuild Container" for it to take effect.
 
 Run an example in a second terminal (`uv run python
-examples/plain_python_demo.py`) and watch its calls appear live, including
+examples/demo.py`) and watch its calls appear live, including
 the large refund pausing in WAITING_APPROVAL, which you can approve from
 the page instead of the CLI.
 

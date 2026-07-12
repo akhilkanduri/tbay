@@ -242,26 +242,47 @@ uv run python dashboard/app.py
 
 ## Examples
 
-- `examples/plain_python_demo.py`: no framework, just `@guarded` functions,
-  covering readonly caching, mutating idempotency, a volatile LLM call, and
-  an approval bypass threshold.
-- `examples/approval_demo.py`: the full approval flow in one run: the
-  bypass threshold, the pause, the webhook firing (against a bundled local
-  stand-in server that prints the payload), and you approving or rejecting
-  from a second terminal or the dashboard.
-- `examples/semantic_cache_demo.py`: semantic cache hits on reworded
-  queries, plus the reasoning-linked audit log.
-- `examples/langchain_demo.py`: stacks under LangChain's `@tool`.
-- `examples/openai_agents_demo.py`: stacks under the OpenAI Agents SDK's
-  `@function_tool`.
+There is one example: `examples/demo.py`. It walks every feature in
+order, in a single run: readonly caching, semantic caching on a reworded
+query, mutating idempotency, volatile LLM-style calls, the reasoning
+audit, the Redis backend, stacking under LangChain / OpenAI Agents SDK
+tool decorators (when those packages are installed), and finally the full
+approval flow: a small refund bypassing approval, a large one pausing, the
+webhook firing against a bundled stand-in server that prints the payload,
+and you approving or rejecting it.
 
-The quickest way to run them is the dev container (next section), which
-brings up Python, Postgres, and Redis with nothing to install locally.
-Every example writes to `$TBAY_DB_URL` when it's set; the dev container
-sets that to its bundled Postgres, the same database the dashboard
-watches, so example runs appear on the dashboard live with no extra flags
-anywhere. (Outside the container, with no `TBAY_DB_URL`, examples fall
-back to a local SQLite file.)
+### Running it in the dev container (recommended)
+
+The dev container pre-sets `TBAY_DB_URL` to its bundled Postgres and
+`TBAY_TEST_REDIS_URL` to its bundled Redis, and the demo reads both, so
+there is nothing to configure:
+
+1. Open the repo in VS Code and run "Dev Containers: Reopen in Container"
+   (first build takes a few minutes).
+2. Terminal 1: `uv run python dashboard/app.py`, then open the forwarded
+   port 8787 (Ports tab). Empty at first.
+3. Terminal 2: `uv run python examples/demo.py`. Every step appears on
+   the dashboard as it happens.
+4. The demo ends blocked on a $500 refund in WAITING_APPROVAL. Approve or
+   reject it from the dashboard row, or in a third terminal with the
+   `tbay approve <execution_id>` command the demo prints. The blocked run
+   then finishes.
+
+### Running it outside the container
+
+With no environment variables set, the demo falls back to a local SQLite
+file (`sqlite:///~/.tbay/demo.sqlite`) and skips the Redis step; that
+works with nothing but `uv sync --extra dev`. To run it against your own
+servers instead, set the same two variables the container sets:
+
+```
+export TBAY_DB_URL="postgresql://user:pass@host:5432/dbname"
+export TBAY_TEST_REDIS_URL="redis://host:6379/0"   # optional
+uv run python examples/demo.py
+```
+
+Point the dashboard at the same URLs to watch it:
+`uv run python dashboard/app.py --db "$TBAY_DB_URL"`.
 
 ## Development
 
@@ -271,7 +292,7 @@ you get Python 3.12 with uv, plus real Postgres and Redis services already
 wired to the right environment variables. Inside it, everything just runs:
 
 ```
-uv run python examples/plain_python_demo.py
+uv run python examples/demo.py
 uv run pytest        # includes the Postgres- and Redis-gated tests
 ```
 
