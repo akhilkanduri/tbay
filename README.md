@@ -211,6 +211,26 @@ tbay reject <execution_id>
 Point the CLI at the same database as your app with `--db-url` or the
 `TBAY_DB_URL` environment variable.
 
+## Monitoring dashboard
+
+`dashboard/` contains a small standalone web app (not part of the Python
+package) for watching your agents' tool calls live: what's RUNNING right
+now with an elapsed timer (a call that started a container or a long job
+stays visible until it returns), what's paused in WAITING_APPROVAL with
+Approve/Reject buttons, and every finished call with its input arguments,
+output or error, duration, and recorded reasoning.
+
+```
+uv sync --extra dev
+uv run python dashboard/app.py --db postgresql://postgres:tbay@localhost:5432/tbay \
+                               --db redis://localhost:6379/0
+```
+
+Then open http://localhost:8787. One dashboard can watch several backends
+at once (Postgres, Redis, SQLite, in any combination); see
+`dashboard/README.md` for all options. In the dev container it needs zero
+arguments: `uv run python dashboard/app.py`.
+
 ## Examples
 
 - `examples/plain_python_demo.py`: no framework, just `@guarded` functions,

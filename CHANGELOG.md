@@ -19,6 +19,11 @@
 - Dev container (`.devcontainer/`) with Python 3.12 + uv, Postgres, and
   Redis preconfigured, so the examples and the full test suite (including
   the Postgres- and Redis-gated tests) run with zero local setup.
+- Monitoring dashboard (`dashboard/`, standalone, not part of the package):
+  a single-file web app showing live in-flight calls with elapsed timers,
+  paused approvals with Approve/Reject buttons, and every execution's
+  input, output/error, duration, and reasoning, across multiple backends
+  (Postgres, Redis, SQLite) at once.
 - Existing SQLite/Postgres databases from 0.1.0 are migrated in place (two
   new nullable columns); no manual steps.
 

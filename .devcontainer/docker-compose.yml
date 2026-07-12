@@ -15,6 +15,8 @@ services:
       TBAY_DB_URL: sqlite:///~/.tbay/db.sqlite
       TBAY_TEST_PG_DSN: postgresql://postgres:tbay@postgres:5432/tbay
       TBAY_TEST_REDIS_URL: redis://redis:6379/0
+      # the monitoring dashboard (dashboard/app.py) watches these by default
+      TBAY_DASHBOARD_DBS: sqlite:///~/.tbay/db.sqlite,postgresql://postgres:tbay@postgres:5432/tbay,redis://redis:6379/0
     depends_on:
       - postgres
       - redis

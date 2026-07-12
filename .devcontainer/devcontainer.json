@@ -4,6 +4,12 @@
     "service": "dev",
     "workspaceFolder": "/workspaces/tbay",
     "postCreateCommand": "pip install --user uv && uv sync --all-extras",
+    "forwardPorts": [8787],
+    "portsAttributes": {
+        "8787": {
+            "label": "tbay monitor"
+        }
+    },
     "customizations": {
         "vscode": {
             "extensions": [
