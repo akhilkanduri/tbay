@@ -54,21 +54,23 @@ python app.py --db postgresql://... --db redis://...
 
 ## In the dev container
 
-Do not use the `localhost` command above inside the dev container: there,
-Postgres and Redis run as separate services reachable at the hostnames
-`postgres` and `redis`, and nothing listens on `localhost:5432`, so the
-`localhost` URLs fail with "Connection refused".
+The bundled Postgres and Redis share the dev container's network namespace
+and their ports are also published to your host machine, so the same
+`localhost:5432` / `localhost:6379` URLs work everywhere while the
+devcontainer stack is running: inside the container terminal, and outside
+in a normal terminal on your machine.
 
-Instead, the container already wires everything: `TBAY_DASHBOARD_DBS`
-points at the bundled services and port 8787 is forwarded, so inside the
-container this is the whole setup:
+Inside the container it's even shorter, because `TBAY_DASHBOARD_DBS` is
+already set and port 8787 is forwarded:
 
 ```
 uv run python dashboard/app.py
 ```
 
-(The explicit equivalent, if you prefer flags:
-`--db postgresql://postgres:tbay@postgres:5432/tbay --db redis://redis:6379/0`.)
+Heads up: the published ports conflict with a Postgres or Redis you
+already run locally on 5432/6379; stop those (or edit the ports in
+`.devcontainer/docker-compose.yml`) first. After changing the compose
+file, run "Dev Containers: Rebuild Container" for it to take effect.
 
 Run an example in a second terminal (`uv run python
 examples/plain_python_demo.py`) and watch its calls appear live, including

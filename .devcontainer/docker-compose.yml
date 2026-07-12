@@ -1,8 +1,16 @@
 # One command to a full playground: `Dev Containers: Reopen in Container` in
 # VS Code (or `devcontainer up` from the CLI) starts Python with uv plus a
-# real Postgres and a real Redis, wired up through the TBAY_* environment
-# variables below. Every example and the full test suite (including the
-# Postgres- and Redis-gated tests) runs out of the box, no local setup.
+# real Postgres and a real Redis.
+#
+# Postgres and Redis share the dev container's network namespace
+# (network_mode: service:dev), so `localhost:5432` and `localhost:6379` work
+# IN the dev container terminal, and those ports are also published to your
+# host machine, so the exact same localhost URLs work OUTSIDE the container
+# too, as long as the devcontainer stack is running. One set of URLs
+# everywhere: local shell, container shell, and CI all use localhost.
+#
+# Heads up: publishing 5432/6379 conflicts with a Postgres or Redis you
+# already run on your machine; stop those (or edit the ports below) first.
 services:
   dev:
     image: mcr.microsoft.com/devcontainers/python:3.12
@@ -13,16 +21,19 @@ services:
       # examples default to SQLite inside the container; point TBAY_DB_URL at
       # postgres or redis below to try a shared backend instead
       TBAY_DB_URL: sqlite:///~/.tbay/db.sqlite
-      TBAY_TEST_PG_DSN: postgresql://postgres:tbay@postgres:5432/tbay
-      TBAY_TEST_REDIS_URL: redis://redis:6379/0
+      TBAY_TEST_PG_DSN: postgresql://postgres:tbay@localhost:5432/tbay
+      TBAY_TEST_REDIS_URL: redis://localhost:6379/0
       # the monitoring dashboard (dashboard/app.py) watches these by default
-      TBAY_DASHBOARD_DBS: sqlite:///~/.tbay/db.sqlite,postgresql://postgres:tbay@postgres:5432/tbay,redis://redis:6379/0
-    depends_on:
-      - postgres
-      - redis
+      TBAY_DASHBOARD_DBS: sqlite:///~/.tbay/db.sqlite,postgresql://postgres:tbay@localhost:5432/tbay,redis://localhost:6379/0
+    ports:
+      - "5432:5432"
+      - "6379:6379"
 
   postgres:
     image: postgres:16-alpine
+    # share the dev container's network namespace: this is what makes
+    # localhost:5432 work in the dev terminal (and via dev's published ports)
+    network_mode: service:dev
     environment:
       POSTGRES_PASSWORD: tbay
       POSTGRES_DB: tbay
@@ -34,6 +45,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    network_mode: service:dev
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

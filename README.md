@@ -230,11 +230,11 @@ Then open http://localhost:8787. One dashboard can watch several backends
 at once (Postgres, Redis, SQLite, in any combination); see
 `dashboard/README.md` for all options.
 
-The command above is for your own machine, with `localhost` pointing at
-servers you run. Inside the dev container, Postgres and Redis are separate
-services named `postgres` and `redis` (there is nothing on `localhost`),
-and `TBAY_DASHBOARD_DBS` is already set to the right URLs, so drop the
-`--db` flags entirely:
+The dev container's Postgres and Redis listen on `localhost` both inside
+the container and (via published ports) on your machine, so the command
+above works in either place while the devcontainer is running. Inside the
+container you can also drop the `--db` flags entirely, since
+`TBAY_DASHBOARD_DBS` is pre-wired:
 
 ```
 uv run python dashboard/app.py
