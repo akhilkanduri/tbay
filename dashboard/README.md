@@ -1,4 +1,4 @@
-# tbay monitor
+# toolbay monitor
 
 A small, standalone web dashboard for watching what your agents' tool calls
 are doing. It is intentionally NOT part of the `tbay` Python package: it's
