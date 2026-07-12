@@ -1,14 +1,16 @@
 # tbay
 
-Execution safety for AI agent tool calls: idempotency, TTL caching,
-singleflight deduplication, risk-tiered policy, and human approval gating,
-as a library you install, not a service you depend on.
+Execution safety for AI agent tool calls: idempotency, TTL and semantic
+caching, singleflight deduplication, risk-tiered policy, human approval
+gating, and a reasoning-linked audit log, as a library you install, not a
+service you depend on.
 
 ```python
 from tbay import TbayClient, guarded
 
 client = TbayClient("sqlite:///~/.tbay/db.sqlite")
 # or: TbayClient("postgresql://user:pass@host/dbname")
+# or: TbayClient("redis://localhost:6379/0")
 
 @guarded(client, policy="readonly")
 def github_search(query: str) -> dict:
@@ -41,10 +43,12 @@ Nothing calls home.
 ```
 pip install tbay               # SQLite backend, stdlib only
 pip install tbay[postgres]     # + Postgres backend
+pip install tbay[redis]        # + Redis backend
 
 # or, with uv:
 uv add tbay
 uv add "tbay[postgres]"
+uv add "tbay[redis]"
 ```
 
 ## How it works
@@ -70,6 +74,65 @@ args + tenant), then atomically claims a row in your database:
   the same arguments should *not* return the same cached answer. Use the
   `volatile` policy (`idempotent: false`) for these; tbay then ignores
   caching, dedup, and `key_fn` entirely and runs the call fresh every time.
+
+Coordination works the same way over all three backends: SQLite (zero
+setup, single machine), Postgres (shared, via `INSERT ... ON CONFLICT` and
+an advisory lock), or Redis (shared, low latency, via Lua scripts that
+Redis executes as one uninterruptible unit).
+
+## Semantic caching
+
+Exact-match caching misses when an agent rewords its own query:
+`"weather in berlin today"` and `"today weather in berlin"` hash to
+different idempotency keys even though any human would call them the same
+question. With `semantic_cache: true` on a policy, tbay embeds each call's
+arguments and serves a stored result whenever a previous call's embedding
+is close enough (`semantic_threshold`, cosine similarity, default 0.92):
+
+```yaml
+policies:
+  semantic_readonly:
+    cache_ttl: 5m
+    semantic_cache: true
+    semantic_threshold: 0.92
+```
+
+Only enable this on read-only tools. A "close enough" answer is fine for a
+search; it is not fine for a refund.
+
+The built-in zero-dependency embedder (token hashing) matches queries that
+reuse the same words in a different order or shape. For true paraphrase
+matching ("weather in berlin" vs "berlin forecast"), plug in a real
+embedding model; anything with an `embed(text) -> list[float]` method works:
+
+```python
+class OpenAIEmbedder:
+    def __init__(self, client):
+        self.client = client
+
+    def embed(self, text):
+        out = self.client.embeddings.create(model="text-embedding-3-small", input=text)
+        return out.data[0].embedding
+
+client = TbayClient(db_url, embedder=OpenAIEmbedder(openai_client))
+```
+
+## Reasoning-linked audit
+
+The audit log records what ran. `with reasoning(...)` also records *why*,
+straight from the agent's own justification, next to the call it explains:
+
+```python
+from tbay import reasoning
+
+with reasoning("customer 42 reported item damaged in transit"):
+    refund_customer("cust_42", 30.0)
+```
+
+`tbay log` then shows `reason='customer 42 reported item damaged in
+transit'` on that execution, which is usually the first thing a human
+approver or a post-incident review wants to know. Blocks nest, and
+concurrent async tasks each see their own reasoning text.
 
 ## Policies
 
@@ -148,26 +211,72 @@ tbay reject <execution_id>
 Point the CLI at the same database as your app with `--db-url` or the
 `TBAY_DB_URL` environment variable.
 
+## Monitoring dashboard
+
+`dashboard/` contains a small standalone web app (not part of the Python
+package) for watching your agents' tool calls live: what's RUNNING right
+now with an elapsed timer (a call that started a container or a long job
+stays visible until it returns), what's paused in WAITING_APPROVAL with
+Approve/Reject buttons, and every finished call with its input arguments,
+output or error, duration, and recorded reasoning.
+
+```
+uv sync --extra dev
+uv run python dashboard/app.py --db postgresql://postgres:tbay@localhost:5432/tbay \
+                               --db redis://localhost:6379/0
+```
+
+Then open http://localhost:8787. One dashboard can watch several backends
+at once (Postgres, Redis, SQLite, in any combination); see
+`dashboard/README.md` for all options.
+
+The dev container's Postgres and Redis listen on `localhost` inside the
+container, and VS Code forwards 5432/6379/8787 to your machine, so the
+command above works in either place while the devcontainer is open.
+Inside the container you can also drop the `--db` flags entirely, since
+`TBAY_DASHBOARD_DBS` is pre-wired:
+
+```
+uv run python dashboard/app.py
+```
+
 ## Examples
 
 - `examples/plain_python_demo.py`: no framework, just `@guarded` functions,
   covering readonly caching, mutating idempotency, a volatile LLM call, and
   an approval bypass threshold.
+- `examples/semantic_cache_demo.py`: semantic cache hits on reworded
+  queries, plus the reasoning-linked audit log.
 - `examples/langchain_demo.py`: stacks under LangChain's `@tool`.
 - `examples/openai_agents_demo.py`: stacks under the OpenAI Agents SDK's
   `@function_tool`.
 
+The quickest way to run them is the dev container (next section), which
+brings up Python, Postgres, and Redis with nothing to install locally.
+
 ## Development
 
-Uses [uv](https://docs.astral.sh/uv/) for dependency management:
+The repo ships a [dev container](https://containers.dev/): open it in
+VS Code ("Dev Containers: Reopen in Container") or GitHub Codespaces and
+you get Python 3.12 with uv, plus real Postgres and Redis services already
+wired to the right environment variables. Inside it, everything just runs:
+
+```
+uv run python examples/plain_python_demo.py
+uv run pytest        # includes the Postgres- and Redis-gated tests
+```
+
+Working without the container uses [uv](https://docs.astral.sh/uv/)
+directly:
 
 ```
 uv sync --extra dev
 uv run pytest
 ```
 
-Postgres-backed tests are skipped unless `TBAY_TEST_PG_DSN` is set to a
-running Postgres instance (CI provides one automatically).
+Postgres- and Redis-backed tests are skipped unless `TBAY_TEST_PG_DSN` and
+`TBAY_TEST_REDIS_URL` point at running servers (CI and the dev container
+provide both automatically).
 
 ## License
 

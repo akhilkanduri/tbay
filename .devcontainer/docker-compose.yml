@@ -1,0 +1,48 @@
+# One command to a full playground: `Dev Containers: Reopen in Container` in
+# VS Code (or `devcontainer up` from the CLI) starts Python with uv plus a
+# real Postgres and a real Redis.
+#
+# Postgres and Redis share the dev container's network namespace
+# (network_mode: service:dev), so `localhost:5432` and `localhost:6379` work
+# in the dev container terminal exactly like on a machine running both
+# natively. devcontainer.json then forwards 5432, 6379, and 8787 to your
+# host through VS Code, so the same localhost URLs also work in a normal
+# terminal on your machine while the devcontainer is open (see the Ports
+# tab; VS Code picks a nearby free local port if one is already taken).
+services:
+  dev:
+    image: mcr.microsoft.com/devcontainers/python:3.12
+    command: sleep infinity
+    volumes:
+      - ..:/workspaces/tbay:cached
+    environment:
+      # examples default to SQLite inside the container; point TBAY_DB_URL at
+      # postgres or redis below to try a shared backend instead
+      TBAY_DB_URL: sqlite:///~/.tbay/db.sqlite
+      TBAY_TEST_PG_DSN: postgresql://postgres:tbay@localhost:5432/tbay
+      TBAY_TEST_REDIS_URL: redis://localhost:6379/0
+      # the monitoring dashboard (dashboard/app.py) watches these by default
+      TBAY_DASHBOARD_DBS: sqlite:///~/.tbay/db.sqlite,postgresql://postgres:tbay@localhost:5432/tbay,redis://localhost:6379/0
+
+  postgres:
+    image: postgres:16-alpine
+    # share the dev container's network namespace: this is what makes
+    # localhost:5432 work in the dev terminal (and via dev's published ports)
+    network_mode: service:dev
+    environment:
+      POSTGRES_PASSWORD: tbay
+      POSTGRES_DB: tbay
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    network_mode: service:dev
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10

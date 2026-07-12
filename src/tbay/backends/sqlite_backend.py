@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS executions (
     cache_expires_at REAL,
     created_at REAL NOT NULL,
     finished_at REAL,
+    embedding_json TEXT,
+    reasoning TEXT,
     UNIQUE (tool_name, idempotency_key, tenant)
 );
 CREATE TABLE IF NOT EXISTS approvals (
@@ -90,6 +92,13 @@ class SQLiteBackend(StorageBackend):
         conn = self._connect()
         try:
             conn.executescript(SCHEMA)
+            # Databases created by tbay < 0.2.0 predate these columns; add
+            # them in place so an upgrade never requires dropping the table.
+            for column in ("embedding_json TEXT", "reasoning TEXT"):
+                try:
+                    conn.execute(f"ALTER TABLE executions ADD COLUMN {column}")
+                except sqlite3.OperationalError:
+                    pass  # column already exists
             conn.commit()
         finally:
             conn.close()
@@ -111,6 +120,8 @@ class SQLiteBackend(StorageBackend):
             cache_expires_at=row["cache_expires_at"],
             created_at=row["created_at"],
             finished_at=row["finished_at"],
+            embedding_json=row["embedding_json"],
+            reasoning=row["reasoning"],
         )
 
     def _fetch_by_key(self, conn, tool_name, idempotency_key, tenant) -> Optional[sqlite3.Row]:
@@ -132,6 +143,8 @@ class SQLiteBackend(StorageBackend):
         max_retries,
         retry_backoff,
         max_concurrent=None,
+        embedding_json=None,
+        reasoning=None,
     ) -> AcquireResult:
         conn = self._connect()
         try:
@@ -157,8 +170,9 @@ class SQLiteBackend(StorageBackend):
             cur = conn.execute(
                 """
                 INSERT INTO executions
-                    (id, tool_name, idempotency_key, tenant, status, args_hash, args_json, policy_name, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, tool_name, idempotency_key, tenant, status, args_hash, args_json, policy_name,
+                     created_at, embedding_json, reasoning)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(tool_name, idempotency_key, tenant) DO NOTHING
                 """,
                 (
@@ -171,6 +185,8 @@ class SQLiteBackend(StorageBackend):
                     args_json,
                     policy_name,
                     time.time(),
+                    embedding_json,
+                    reasoning,
                 ),
             )
             if cur.rowcount == 1:
@@ -329,5 +345,18 @@ class SQLiteBackend(StorageBackend):
                 (tool_name, tenant, since),
             ).fetchone()
             return row["n"]
+        finally:
+            conn.close()
+
+    def list_semantic_candidates(self, tool_name: str, tenant: str, limit: int = 200) -> List[ExecutionRecord]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM executions WHERE tool_name=? AND tenant=? AND status=? "
+                "AND embedding_json IS NOT NULL AND (cache_expires_at IS NULL OR cache_expires_at > ?) "
+                "ORDER BY created_at DESC LIMIT ?",
+                (tool_name, tenant, SUCCEEDED, time.time(), limit),
+            ).fetchall()
+            return [self._row_to_record(r) for r in rows]
         finally:
             conn.close()

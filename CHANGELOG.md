@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.2.0
+
+- Redis storage backend (`pip install tbay[redis]`, `redis://` URLs):
+  shared, low-latency coordination for multi-process deployments, with the
+  idempotency-key claim and the `max_concurrent` check made atomic through
+  server-side Lua scripts.
+- Semantic caching: `semantic_cache: true` on a policy serves a stored
+  result when a new call's arguments are similar by embedding cosine
+  similarity (`semantic_threshold`, default 0.92), not just byte-identical.
+  Ships a zero-dependency token-hashing embedder; any object with an
+  `embed(text) -> list[float]` method plugs in via
+  `TbayClient(embedder=...)` for real paraphrase matching.
+- Reasoning-linked audit log: `with tbay.reasoning("why")` records the
+  agent's stated justification on every execution started inside the block,
+  shown by `tbay log` as `reason=...`. Context-local, so concurrent async
+  tasks and threads never mix their reasoning up.
+- Dev container (`.devcontainer/`) with Python 3.12 + uv, Postgres, and
+  Redis preconfigured, so the examples and the full test suite (including
+  the Postgres- and Redis-gated tests) run with zero local setup.
+- Monitoring dashboard (`dashboard/`, standalone, not part of the package):
+  a single-file web app showing live in-flight calls with elapsed timers,
+  paused approvals with Approve/Reject buttons, and every execution's
+  input, output/error, duration, and reasoning, across multiple backends
+  (Postgres, Redis, SQLite) at once.
+- Existing SQLite/Postgres databases from 0.1.0 are migrated in place (two
+  new nullable columns); no manual steps.
+
 ## 0.1.0
 
 Initial release.

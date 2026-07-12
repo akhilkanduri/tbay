@@ -11,6 +11,8 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Any, Callable, Dict, Optional
 
 from .backends.base import AcquireResult, APPROVAL_APPROVED, FAILED, StorageBackend, SUCCEEDED
+from .context import current_reasoning
+from .embedders import cosine_similarity
 from .exceptions import (
     ApprovalRejected,
     ApprovalTimeout,
@@ -64,8 +66,13 @@ def _make_backend(db_url: str) -> StorageBackend:
         from .backends.postgres_backend import PostgresBackend
 
         return PostgresBackend(db_url)
+    if db_url.startswith("redis://") or db_url.startswith("rediss://") or db_url.startswith("unix://"):
+        from .backends.redis_backend import RedisBackend
+
+        return RedisBackend(db_url)
     raise ValueError(
-        f"unsupported db_url {db_url!r}; use 'sqlite:///path/to/db.sqlite' or 'postgresql://user:pass@host/db'"
+        f"unsupported db_url {db_url!r}; use 'sqlite:///path/to/db.sqlite', "
+        f"'postgresql://user:pass@host/db', or 'redis://host:6379/0'"
     )
 
 
@@ -79,11 +86,16 @@ class TbayClient:
         db_url: str = "sqlite:///~/.tbay/db.sqlite",
         policy_file: Optional[str] = None,
         poll_interval: float = 0.25,
+        embedder=None,
     ):
         self.backend = _make_backend(db_url)
         self.backend.init_schema()
         self.policies: Dict[str, Policy] = load_policies(policy_file)
         self.poll_interval = poll_interval
+        # Used only by policies with semantic_cache: true. Anything with an
+        # embed(text) -> list[float] method works; when left as None, the
+        # zero-dependency HashingEmbedder is created on first use.
+        self._embedder = embedder
 
     def get_policy(self, name: str) -> Policy:
         if name not in self.policies:
@@ -96,6 +108,31 @@ class TbayClient:
         if record.status == FAILED:
             raise ExecutionFailed(record.error)
         return json.loads(record.result_json)
+
+    def _get_embedder(self):
+        if self._embedder is None:
+            from .embedders import HashingEmbedder
+
+            self._embedder = HashingEmbedder()
+        return self._embedder
+
+    def _semantic_lookup(self, pol: Policy, name: str, tenant: str, normalized: Dict[str, Any]):
+        """Embed this call's args, then look for an already-answered call
+        whose args are close enough (cosine >= semantic_threshold). Returns
+        (embedding, best_match_or_None); the embedding is stored with the new
+        execution on a miss so future similar calls can find it."""
+        text = json.dumps(normalized, sort_keys=True, default=str)
+        embedding = self._get_embedder().embed(text)
+        best, best_score = None, 0.0
+        for candidate in self.backend.list_semantic_candidates(name, tenant):
+            try:
+                vector = json.loads(candidate.embedding_json)
+            except (TypeError, ValueError):
+                continue
+            score = cosine_similarity(embedding, vector)
+            if score >= pol.semantic_threshold and score > best_score:
+                best, best_score = candidate, score
+        return embedding, best
 
     def _needs_approval(self, pol: Policy, normalized: Dict[str, Any]) -> bool:
         """Whether *this specific call* needs a human, taking approval_bypass_arg
@@ -157,7 +194,8 @@ class TbayClient:
             raise
 
     def _acquire_gated(self, pol: Policy, tool_name: str, idempotency_key: str, tenant: str,
-                        policy_name: str, args_hash: str, args_json: str) -> AcquireResult:
+                        policy_name: str, args_hash: str, args_json: str,
+                        embedding_json: Optional[str] = None, reasoning: Optional[str] = None) -> AcquireResult:
         """Call acquire_or_get(), retrying while max_concurrent holds it at
         "wait_for_slot" (see StorageBackend.acquire_or_get: the RUNNING count
         and the insert happen in one atomic step there, so this loop can't
@@ -176,6 +214,8 @@ class TbayClient:
                 max_retries=pol.max_retries,
                 retry_backoff=pol.retry_backoff,
                 max_concurrent=pol.max_concurrent,
+                embedding_json=embedding_json,
+                reasoning=reasoning,
             )
             if not acq.wait_for_slot:
                 return acq
@@ -187,7 +227,9 @@ class TbayClient:
             time.sleep(self.poll_interval)
 
     async def _acquire_gated_async(self, pol: Policy, tool_name: str, idempotency_key: str, tenant: str,
-                                    policy_name: str, args_hash: str, args_json: str) -> AcquireResult:
+                                    policy_name: str, args_hash: str, args_json: str,
+                                    embedding_json: Optional[str] = None,
+                                    reasoning: Optional[str] = None) -> AcquireResult:
         deadline = time.time() + pol.concurrency_wait_timeout
         while True:
             acq = await asyncio.to_thread(
@@ -202,6 +244,8 @@ class TbayClient:
                 max_retries=pol.max_retries,
                 retry_backoff=pol.retry_backoff,
                 max_concurrent=pol.max_concurrent,
+                embedding_json=embedding_json,
+                reasoning=reasoning,
             )
             if not acq.wait_for_slot:
                 return acq
@@ -243,12 +287,22 @@ class TbayClient:
         normalized = _bind_args(fn, args, kwargs)
         args_hash = _hash_args(normalized)
         args_json = _redacted_args_json(normalized, pol.redact_args)
+        reasoning = current_reasoning()
 
         if not pol.idempotent:
-            return self._run_volatile(fn, pol, args, kwargs, tenant, name, args_hash, args_json, normalized)
+            return self._run_volatile(fn, pol, args, kwargs, tenant, name, args_hash, args_json, normalized,
+                                      reasoning=reasoning)
+
+        embedding_json = None
+        if pol.semantic_cache:
+            embedding, hit = self._semantic_lookup(pol, name, tenant, normalized)
+            if hit is not None:
+                return json.loads(hit.result_json)
+            embedding_json = json.dumps(embedding)
 
         idem_key = key_fn(*args, **kwargs) if key_fn else _default_key(name, normalized, tenant)
-        acq = self._acquire_gated(pol, name, idem_key, tenant, policy, args_hash, args_json)
+        acq = self._acquire_gated(pol, name, idem_key, tenant, policy, args_hash, args_json,
+                                  embedding_json=embedding_json, reasoning=reasoning)
 
         if acq.use_cached:
             return json.loads(acq.record.result_json)
@@ -305,6 +359,7 @@ class TbayClient:
         args_hash: str,
         args_json: str,
         normalized: Dict[str, Any],
+        reasoning: Optional[str] = None,
     ) -> Any:
         """Path for idempotent=False policies: an LLM call used to decide
         something, "roll a die", "get the current time". Every call gets its
@@ -315,7 +370,8 @@ class TbayClient:
         attempt = 0
         while True:
             execution_id = str(uuid.uuid4())
-            acq = self._acquire_gated(pol, name, execution_id, tenant, pol.name, args_hash, args_json)
+            acq = self._acquire_gated(pol, name, execution_id, tenant, pol.name, args_hash, args_json,
+                                      reasoning=reasoning)
             self._guard_rate_limit(acq.record, pol, name, tenant)
             try:
                 return self._execute_as_owner(acq.record, fn, args, kwargs, pol, name, normalized)
@@ -344,14 +400,23 @@ class TbayClient:
         normalized = _bind_args(fn, args, kwargs)
         args_hash = _hash_args(normalized)
         args_json = _redacted_args_json(normalized, pol.redact_args)
+        reasoning = current_reasoning()
 
         if not pol.idempotent:
             return await self._run_volatile_async(
-                fn, pol, args, kwargs, tenant, name, args_hash, args_json, normalized
+                fn, pol, args, kwargs, tenant, name, args_hash, args_json, normalized, reasoning=reasoning
             )
 
+        embedding_json = None
+        if pol.semantic_cache:
+            embedding, hit = await asyncio.to_thread(self._semantic_lookup, pol, name, tenant, normalized)
+            if hit is not None:
+                return json.loads(hit.result_json)
+            embedding_json = json.dumps(embedding)
+
         idem_key = key_fn(*args, **kwargs) if key_fn else _default_key(name, normalized, tenant)
-        acq = await self._acquire_gated_async(pol, name, idem_key, tenant, policy, args_hash, args_json)
+        acq = await self._acquire_gated_async(pol, name, idem_key, tenant, policy, args_hash, args_json,
+                                              embedding_json=embedding_json, reasoning=reasoning)
 
         if acq.use_cached:
             return json.loads(acq.record.result_json)
@@ -410,11 +475,13 @@ class TbayClient:
         args_hash: str,
         args_json: str,
         normalized: Dict[str, Any],
+        reasoning: Optional[str] = None,
     ) -> Any:
         attempt = 0
         while True:
             execution_id = str(uuid.uuid4())
-            acq = await self._acquire_gated_async(pol, name, execution_id, tenant, pol.name, args_hash, args_json)
+            acq = await self._acquire_gated_async(pol, name, execution_id, tenant, pol.name, args_hash,
+                                                  args_json, reasoning=reasoning)
             await self._guard_rate_limit_async(acq.record, pol, name, tenant)
             try:
                 return await self._execute_as_owner_async(acq.record, fn, args, kwargs, pol, name, normalized)

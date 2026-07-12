@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tbay"
-version = "0.1.0"
-description = "Execution safety for AI agent tool calls: idempotency, caching, singleflight, policy, and approval gating, as a library, not a service."
+version = "0.2.0"
+description = "Execution safety for AI agent tool calls: idempotency, semantic caching, singleflight, policy, approval gating, and a reasoning-linked audit log, as a library, not a service."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
@@ -22,7 +22,8 @@ classifiers = [
 
 [project.optional-dependencies]
 postgres = ["psycopg2-binary>=2.9"]
-dev = ["pytest>=7.4", "psycopg2-binary>=2.9"]
+redis = ["redis>=4.2"]
+dev = ["pytest>=7.4", "psycopg2-binary>=2.9", "redis>=4.2"]
 
 [project.scripts]
 tbay = "tbay.cli:main"
