@@ -63,7 +63,8 @@ port is taken locally, VS Code maps it to a nearby free one and shows it
 there).
 
 Inside the container it's even shorter, because `TBAY_DASHBOARD_DBS` is
-already set:
+already set to the bundled Postgres and Redis (the container never uses
+SQLite; everything in it runs on Postgres):
 
 ```
 uv run python dashboard/app.py

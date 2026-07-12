@@ -258,8 +258,10 @@ uv run python dashboard/app.py
 The quickest way to run them is the dev container (next section), which
 brings up Python, Postgres, and Redis with nothing to install locally.
 Every example writes to `$TBAY_DB_URL` when it's set; the dev container
-sets that to the same database the dashboard watches, so example runs
-appear on the dashboard live with no extra flags anywhere.
+sets that to its bundled Postgres, the same database the dashboard
+watches, so example runs appear on the dashboard live with no extra flags
+anywhere. (Outside the container, with no `TBAY_DB_URL`, examples fall
+back to a local SQLite file.)
 
 ## Development
 

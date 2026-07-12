@@ -16,13 +16,16 @@ services:
     volumes:
       - ..:/workspaces/tbay:cached
     environment:
-      # examples default to SQLite inside the container; point TBAY_DB_URL at
-      # postgres or redis below to try a shared backend instead
-      TBAY_DB_URL: sqlite:///~/.tbay/db.sqlite
+      # Inside the dev container everything runs against the bundled
+      # Postgres: the examples, the tbay CLI, and the dashboard all read
+      # TBAY_DB_URL / TBAY_DASHBOARD_DBS, so they share one database with
+      # zero flags. (SQLite stays supported by the package itself; it just
+      # isn't used in the container, where a real Postgres is always up.)
+      TBAY_DB_URL: postgresql://postgres:tbay@localhost:5432/tbay
       TBAY_TEST_PG_DSN: postgresql://postgres:tbay@localhost:5432/tbay
       TBAY_TEST_REDIS_URL: redis://localhost:6379/0
       # the monitoring dashboard (dashboard/app.py) watches these by default
-      TBAY_DASHBOARD_DBS: sqlite:///~/.tbay/db.sqlite,postgresql://postgres:tbay@localhost:5432/tbay,redis://localhost:6379/0
+      TBAY_DASHBOARD_DBS: postgresql://postgres:tbay@localhost:5432/tbay,redis://localhost:6379/0
 
   postgres:
     image: postgres:16-alpine
