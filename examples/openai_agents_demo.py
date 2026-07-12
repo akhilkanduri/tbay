@@ -5,11 +5,14 @@ underneath, so the SDK's own tool machinery is none the wiser.
 Requires: pip install openai-agents
 Run: python examples/openai_agents_demo.py
 """
+import os
+
 from agents import Agent, Runner, function_tool
 
 from tbay import TbayClient, guarded
 
-client = TbayClient("sqlite:///~/.tbay/demo.sqlite")
+DB_URL = os.environ.get("TBAY_DB_URL", "sqlite:///~/.tbay/demo.sqlite")
+client = TbayClient(DB_URL)
 
 
 @function_tool

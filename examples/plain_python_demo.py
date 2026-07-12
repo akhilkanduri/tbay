@@ -1,10 +1,17 @@
 """Plain-Python demo: no agent framework at all, just @guarded functions.
 
 Run: python examples/plain_python_demo.py
+
+Uses $TBAY_DB_URL when set (the dev container sets it to the same database
+the dashboard watches, so runs show up there live), otherwise a local
+SQLite demo file.
 """
+import os
+
 from tbay import ApprovalRejected, TbayClient, guarded
 
-client = TbayClient("sqlite:///~/.tbay/demo.sqlite")
+DB_URL = os.environ.get("TBAY_DB_URL", "sqlite:///~/.tbay/demo.sqlite")
+client = TbayClient(DB_URL)
 
 # Small refunds go straight through; anything over $50 still pauses for a
 # human. This is set here in code just for the demo; normally you'd put it
@@ -55,8 +62,9 @@ if __name__ == "__main__":
 
     print("\n5. a large refund still pauses for approval; this call will block until you run,")
     print("   in another terminal:")
-    print("     tbay --db-url sqlite:///~/.tbay/demo.sqlite approve <execution_id>")
-    print("   (find the execution_id with `tbay --db-url sqlite:///~/.tbay/demo.sqlite log`)")
+    print(f"     tbay --db-url {DB_URL} approve <execution_id>")
+    print(f"   (find the execution_id with `tbay --db-url {DB_URL} log`,")
+    print("    or click Approve on the row in the dashboard)")
     try:
         result = refund_customer("cust_2", 500.00)
         print("approved:", result)

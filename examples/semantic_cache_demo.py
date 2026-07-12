@@ -6,13 +6,16 @@ reasoning context records WHY the agent made each call, right in the audit
 log next to the call itself.
 
 Run: python examples/semantic_cache_demo.py
-Then inspect the audit trail: tbay --db-url sqlite:///~/.tbay/demo.sqlite log
+Then inspect the audit trail with `tbay log` (the exact command, with the
+right --db-url, is printed at the end).
 """
+import os
 import time
 
 from tbay import TbayClient, guarded, reasoning
 
-client = TbayClient("sqlite:///~/.tbay/demo.sqlite")
+DB_URL = os.environ.get("TBAY_DB_URL", "sqlite:///~/.tbay/demo.sqlite")
+client = TbayClient(DB_URL)
 
 # Enabled in code for the demo; normally this lives in a policy YAML file:
 #   readonly:
@@ -51,6 +54,6 @@ if __name__ == "__main__":
     with reasoning("user reported the checkout page is down, escalating"):
         print(create_ticket("checkout page outage"))
 
-    print("\nNow run `tbay --db-url sqlite:///~/.tbay/demo.sqlite log` and look for the")
+    print(f"\nNow run `tbay --db-url {DB_URL} log` and look for the")
     print("reason=... field on the create_ticket row.")
     time.sleep(0.1)

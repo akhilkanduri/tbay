@@ -6,11 +6,14 @@ other framework's tool decorator too.
 Requires: pip install langchain-core
 Run: python examples/langchain_demo.py
 """
+import os
+
 from langchain_core.tools import tool
 
 from tbay import TbayClient, guarded
 
-client = TbayClient("sqlite:///~/.tbay/demo.sqlite")
+DB_URL = os.environ.get("TBAY_DB_URL", "sqlite:///~/.tbay/demo.sqlite")
+client = TbayClient(DB_URL)
 
 
 @tool
@@ -51,6 +54,6 @@ if __name__ == "__main__":
     print(ask_llm_for_next_step.invoke({"context": "customer is angry"}))  # same args, still a real call
 
     print("\nrefund_customer is destructive and will block for approval; run:")
-    print("  tbay --db-url sqlite:///~/.tbay/demo.sqlite log")
-    print("  tbay --db-url sqlite:///~/.tbay/demo.sqlite approve <execution_id>")
+    print(f"  tbay --db-url {DB_URL} log")
+    print(f"  tbay --db-url {DB_URL} approve <execution_id>")
     print(refund_customer.invoke({"customer_id": "cust_42", "amount": 19.99}))

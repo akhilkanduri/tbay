@@ -245,6 +245,10 @@ uv run python dashboard/app.py
 - `examples/plain_python_demo.py`: no framework, just `@guarded` functions,
   covering readonly caching, mutating idempotency, a volatile LLM call, and
   an approval bypass threshold.
+- `examples/approval_demo.py`: the full approval flow in one run: the
+  bypass threshold, the pause, the webhook firing (against a bundled local
+  stand-in server that prints the payload), and you approving or rejecting
+  from a second terminal or the dashboard.
 - `examples/semantic_cache_demo.py`: semantic cache hits on reworded
   queries, plus the reasoning-linked audit log.
 - `examples/langchain_demo.py`: stacks under LangChain's `@tool`.
@@ -253,6 +257,9 @@ uv run python dashboard/app.py
 
 The quickest way to run them is the dev container (next section), which
 brings up Python, Postgres, and Redis with nothing to install locally.
+Every example writes to `$TBAY_DB_URL` when it's set; the dev container
+sets that to the same database the dashboard watches, so example runs
+appear on the dashboard live with no extra flags anywhere.
 
 ## Development
 
