@@ -35,6 +35,8 @@ class ExecutionRecord:
     cache_expires_at: Optional[float]
     created_at: float
     finished_at: Optional[float]
+    embedding_json: Optional[str] = None  # args embedding, present only when the policy has semantic_cache on
+    reasoning: Optional[str] = None  # why the agent made this call, captured from `with tbay.reasoning(...)`
 
 
 @dataclass
@@ -89,6 +91,8 @@ class StorageBackend:
         max_retries: int,
         retry_backoff: float,
         max_concurrent: Optional[int] = None,
+        embedding_json: Optional[str] = None,
+        reasoning: Optional[str] = None,
     ) -> AcquireResult:
         """Try to become the owner of this (tool_name, idempotency_key, tenant).
         If someone already owns it, report back what the caller should do instead.
@@ -131,6 +135,13 @@ class StorageBackend:
     def count_since(self, tool_name: str, tenant: str, since: float) -> int:
         """How many calls to this tool (for this tenant) were created at or
         after `since` (a time.time() timestamp). Backs the rate_limit guardrail."""
+        raise NotImplementedError
+
+    def list_semantic_candidates(self, tool_name: str, tenant: str, limit: int = 200) -> List[ExecutionRecord]:
+        """Recent SUCCEEDED executions for this tool/tenant that carry an args
+        embedding and whose cached result hasn't expired. The client compares
+        these against a new call's embedding to find a semantic cache hit;
+        the cosine math happens in the client, so backends only filter."""
         raise NotImplementedError
 
     # -- generic polling helpers, shared by every backend --
