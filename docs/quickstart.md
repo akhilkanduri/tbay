@@ -80,6 +80,22 @@ Postgres and Redis listen on `localhost` inside the container, and VS Code
 forwards 5432/6379/8787 to your machine, so the same URLs work in a normal
 terminal while the container is open.
 
+Two isolation details worth knowing:
+
+- The test suite uses its own `tbay_test` database and Redis keyspace
+  (db 1), so `uv run pytest` never leaves fixture rows in what the demo
+  and dashboard show.
+- To reset the demo data whenever you want a clean slate:
+
+  ```
+  uv run tbay clear --yes                                      # Postgres (TBAY_DB_URL)
+  uv run tbay --db-url redis://localhost:6379/0 clear --yes    # Redis
+  ```
+
+  Same commands work from a host terminal while the container is open.
+  Rebuilding the container also starts fresh, since the databases keep no
+  volume.
+
 ## Running the demo outside the container
 
 The demo always uses Postgres (no SQLite fallback). Its default DSN is

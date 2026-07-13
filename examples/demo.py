@@ -36,7 +36,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from tbay import ApprovalRejected, TbayClient, agent, guarded, reasoning
 
 DB_URL = os.environ.get("TBAY_DB_URL", "postgresql://postgres:tbay@localhost:5432/tbay")
-REDIS_URL = os.environ.get("TBAY_TEST_REDIS_URL")  # set by the dev container
+# TBAY_REDIS_URL is the demo/dashboard Redis (the dev container sets it);
+# TBAY_TEST_REDIS_URL is the test suite's separate keyspace, accepted here
+# as a fallback for people running outside the container with only one set.
+REDIS_URL = os.environ.get("TBAY_REDIS_URL") or os.environ.get("TBAY_TEST_REDIS_URL")
 WEBHOOK_PORT = 9911
 
 try:

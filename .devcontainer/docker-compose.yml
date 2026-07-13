@@ -22,8 +22,11 @@ services:
       # zero flags. (SQLite stays supported by the package itself; it just
       # isn't used in the container, where a real Postgres is always up.)
       TBAY_DB_URL: postgresql://postgres:tbay@localhost:5432/tbay
-      TBAY_TEST_PG_DSN: postgresql://postgres:tbay@localhost:5432/tbay
-      TBAY_TEST_REDIS_URL: redis://localhost:6379/0
+      TBAY_REDIS_URL: redis://localhost:6379/0
+      # tests get their OWN database and Redis keyspace, so `uv run pytest`
+      # never leaves fixture rows in what the demo and dashboard show
+      TBAY_TEST_PG_DSN: postgresql://postgres:tbay@localhost:5432/tbay_test
+      TBAY_TEST_REDIS_URL: redis://localhost:6379/1
       # the monitoring dashboard (dashboard/app.py) watches these by default
       TBAY_DASHBOARD_DBS: postgresql://postgres:tbay@localhost:5432/tbay,redis://localhost:6379/0
 
@@ -35,6 +38,9 @@ services:
     environment:
       POSTGRES_PASSWORD: tbay
       POSTGRES_DB: tbay
+    volumes:
+      # creates the separate tbay_test database on first initialization
+      - ./init-db.sql:/docker-entrypoint-initdb.d/10-init-db.sql:ro
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "postgres"]
       interval: 5s
