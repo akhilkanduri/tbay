@@ -206,10 +206,19 @@ tbay log                                   # the audit log
 tbay log --tool refund_customer --status WAITING_APPROVAL
 tbay approve <execution_id>
 tbay reject <execution_id>
+tbay clear                                 # wipe ALL executions/approvals (asks first)
 ```
 
 Point the CLI at the same database as your app with `--db-url` or the
-`TBAY_DB_URL` environment variable.
+`TBAY_DB_URL` environment variable. `tbay clear` resets a demo or dev
+database: every execution, cached result, and approval is deleted (on
+Redis it removes only tbay's own keys, never anything else in that
+database). Add `--yes` to skip the confirmation prompt.
+
+For a GUI instead, the dev container ships with the SQLTools extension
+(preconfigured "tbay postgres" connection: browse and edit the
+`executions` and `approvals` tables) and the Redis for VS Code extension
+(connect to `localhost:6379` and browse the `tbay:` keys).
 
 ## Monitoring dashboard
 

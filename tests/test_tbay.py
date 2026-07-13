@@ -186,3 +186,21 @@ def _wait_for_status(client, tool_name, status, timeout=5.0):
                 return record.id
         time.sleep(0.02)
     raise AssertionError(f"no execution for {tool_name!r} reached status {status!r} within {timeout}s")
+
+
+def test_clear_wipes_everything(client):
+    from tbay import guarded
+
+    @guarded(client, policy="mutating")
+    def act(x: int) -> dict:
+        return {"x": x}
+
+    act(1)
+    act(2)
+    assert len(client.backend.list_executions()) == 2
+    removed = client.backend.clear()
+    assert removed == 2
+    assert client.backend.list_executions() == []
+    # the same key runs fresh after a clear, since its history is gone
+    act(1)
+    assert len(client.backend.list_executions()) == 1

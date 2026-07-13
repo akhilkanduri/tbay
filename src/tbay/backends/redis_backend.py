@@ -345,3 +345,17 @@ class RedisBackend(StorageBackend):
             if len(results) >= limit:
                 break
         return results
+
+    def clear(self) -> int:
+        # Only tbay's own keys (everything under the prefix), never a blind
+        # FLUSHDB: the Redis database may hold other applications' data.
+        removed = self._r.zcard(self._log_key())
+        batch = []
+        for key in self._r.scan_iter(match=f"{self._p}*", count=500):
+            batch.append(key)
+            if len(batch) >= 500:
+                self._r.delete(*batch)
+                batch = []
+        if batch:
+            self._r.delete(*batch)
+        return removed

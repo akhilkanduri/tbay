@@ -24,6 +24,7 @@ def main(ctx, db_url, policy_file):
     """
     ctx.ensure_object(dict)
     ctx.obj["client"] = TbayClient(db_url=db_url, policy_file=policy_file)
+    ctx.obj["db_url"] = db_url
 
 
 @main.command()
@@ -72,6 +73,24 @@ def log_cmd(ctx, tool_name, status, tenant, limit, show_args):
         if r.reasoning:
             line += f"  reason={r.reasoning!r}"
         click.echo(line)
+
+
+@main.command()
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt")
+@click.pass_context
+def clear(ctx, yes):
+    """Delete EVERY execution and approval from the connected database.
+
+    Cached results, idempotency keys, pending approvals, the audit log:
+    all gone, with no undo. Useful for resetting a demo or dev database.
+    Works the same over SQLite, Postgres, and Redis (on Redis it deletes
+    only tbay's own keys, never the whole database).
+    """
+    db_url = ctx.obj["db_url"]
+    if not yes:
+        click.confirm(f"Delete every execution and approval in {db_url}?", abort=True)
+    removed = ctx.obj["client"].backend.clear()
+    click.echo(f"cleared {removed} executions from {db_url}")
 
 
 @main.command()

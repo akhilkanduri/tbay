@@ -63,3 +63,15 @@ def test_max_concurrent_is_atomic_over_postgres(pg_client):
 
     assert peak
     assert max(peak) == 1
+
+
+def test_clear_wipes_everything_over_postgres(pg_client):
+    tool_name = f"pg_clear_{uuid.uuid4().hex}"
+
+    @guarded(pg_client, policy="mutating", tool_name=tool_name)
+    def act(x: int) -> dict:
+        return {"x": x}
+
+    act(1)
+    assert pg_client.backend.clear() >= 1
+    assert pg_client.backend.list_executions() == []

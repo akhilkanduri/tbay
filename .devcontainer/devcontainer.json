@@ -20,10 +20,24 @@
         "vscode": {
             "extensions": [
                 "ms-python.python",
-                "charliermarsh.ruff"
+                "charliermarsh.ruff",
+                "mtxr.sqltools",
+                "mtxr.sqltools-driver-pg",
+                "redis.redis-for-vscode"
             ],
             "settings": {
-                "python.defaultInterpreterPath": "/workspaces/tbay/.venv/bin/python"
+                "python.defaultInterpreterPath": "/workspaces/tbay/.venv/bin/python",
+                "sqltools.connections": [
+                    {
+                        "name": "tbay postgres",
+                        "driver": "PostgreSQL",
+                        "server": "localhost",
+                        "port": 5432,
+                        "database": "tbay",
+                        "username": "postgres",
+                        "password": "tbay"
+                    }
+                ]
             }
         }
     }

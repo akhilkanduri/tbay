@@ -360,3 +360,13 @@ class SQLiteBackend(StorageBackend):
             return [self._row_to_record(r) for r in rows]
         finally:
             conn.close()
+
+    def clear(self) -> int:
+        conn = self._connect()
+        try:
+            conn.execute("DELETE FROM approvals")  # references executions, so it goes first
+            removed = conn.execute("DELETE FROM executions").rowcount
+            conn.commit()
+            return removed
+        finally:
+            conn.close()

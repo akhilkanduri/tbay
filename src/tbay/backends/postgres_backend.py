@@ -357,3 +357,15 @@ class PostgresBackend(StorageBackend):
             return [self._row_to_record(r) for r in rows]
         finally:
             conn.close()
+
+    def clear(self) -> int:
+        conn = self._connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM approvals")  # references executions, so it goes first
+                cur.execute("DELETE FROM executions")
+                removed = cur.rowcount
+            conn.commit()
+            return removed
+        finally:
+            conn.close()

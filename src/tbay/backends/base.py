@@ -144,6 +144,12 @@ class StorageBackend:
         the cosine math happens in the client, so backends only filter."""
         raise NotImplementedError
 
+    def clear(self) -> int:
+        """Delete every execution and approval this backend stores. Returns
+        how many executions were removed. Backs `tbay clear`; there is no
+        undo, so the CLI asks for confirmation before calling this."""
+        raise NotImplementedError
+
     # -- generic polling helpers, shared by every backend --
 
     def wait_for_result(self, execution_id: str, timeout: float, poll_interval: float) -> ExecutionRecord:
