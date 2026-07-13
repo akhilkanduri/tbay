@@ -50,13 +50,19 @@ def approve(ctx, execution_id, resolver):
 @main.command()
 @click.argument("execution_id")
 @click.option("--resolver", default="cli", help="Who's rejecting this, recorded in the audit log")
+@click.option("--reason", default=None, help="Why this was rejected; shown to the caller and in the audit log")
 @click.pass_context
-def reject(ctx, execution_id, resolver):
-    """Reject a paused (WAITING_APPROVAL) execution. The tool call never runs."""
+def reject(ctx, execution_id, resolver, reason):
+    """Reject a paused (WAITING_APPROVAL) execution. The tool call never runs.
+
+    Give a --reason: the blocked caller's ApprovalRejected error carries it,
+    so the agent (and whoever reads the log) learns WHY, not just that it
+    was refused.
+    """
     secret = os.environ.get("TBAY_APPROVAL_SECRET")
     signature = sign_approval(secret, execution_id, False) if secret else None
     ctx.obj["client"].backend.resolve_approval(
-        execution_id, approved=False, resolver=resolver, signature=signature
+        execution_id, approved=False, resolver=resolver, signature=signature, note=reason
     )
     click.echo(f"rejected {execution_id}" + (" (signed)" if signature else ""))
 

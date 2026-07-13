@@ -57,6 +57,7 @@ def _record_to_dict(record, source: str) -> dict:
         "error": record.error,
         "reasoning": record.reasoning,
         "agent_id": record.agent_id,
+        "agent_meta": record.agent_meta,
         "retry_count": record.retry_count,
         "created_at": record.created_at,
         "finished_at": record.finished_at,
@@ -89,7 +90,7 @@ def fetch_executions(tool: str = "", status: str = "", limit: int = 200) -> dict
     }
 
 
-def resolve_approval(source: str, execution_id: str, approved: bool) -> dict:
+def resolve_approval(source: str, execution_id: str, approved: bool, note: str = "") -> dict:
     client = SOURCES.get(source)
     if client is None:
         return {"ok": False, "error": f"unknown source {source!r}"}
@@ -106,7 +107,9 @@ def resolve_approval(source: str, execution_id: str, approved: bool) -> dict:
     # credentials alone can't approve (see src/tbay/security.py).
     secret = os.environ.get("TBAY_APPROVAL_SECRET")
     signature = sign_approval(secret, execution_id, approved) if secret else None
-    client.backend.resolve_approval(execution_id, approved=approved, resolver="dashboard", signature=signature)
+    client.backend.resolve_approval(
+        execution_id, approved=approved, resolver="dashboard", signature=signature, note=note or None
+    )
     return {"ok": True, "signed": bool(signature)}
 
 
@@ -154,6 +157,7 @@ class Handler(BaseHTTPRequestHandler):
                 source=body.get("source", ""),
                 execution_id=body.get("execution_id", ""),
                 approved=(url.path == "/api/approve"),
+                note=str(body.get("note", "") or "")[:500],
             )
         except Exception as exc:
             result = {"ok": False, "error": str(exc)}
@@ -516,7 +520,7 @@ function renderFlight(execs) {
     return '<div class="fcard panel' + (waiting ? " waiting" : "") + '">' +
       '<span class="orb"></span>' +
       '<span class="tool">' + esc(e.tool_name) + "</span>" +
-      (e.agent_id ? '<span class="agent">&#129302; ' + esc(e.agent_id) + "</span>" : "") +
+      (e.agent_id ? '<span class="agent" title="' + esc(e.agent_meta || "") + '">&#129302; ' + esc(e.agent_id) + "</span>" : "") +
       '<span class="tag">' + (waiting ? "awaiting human" : "executing") + "</span>" +
       '<span class="elapsed" data-since="' + e.created_at + '">' + fmtElapsed(e.created_at) + "</span>" +
       "<code>" + esc(e.args_json || "") + "</code>" +
@@ -533,7 +537,7 @@ function rowHtml(e) {
     '<tr class="row' + (openNow ? " active-row" : "") + '" data-action="toggle" data-key="' + esc(key) + '">' +
     '<td class="mono dim" title="' + new Date(e.created_at * 1000).toISOString() + '">' + fmtAgo(e.created_at) + "</td>" +
     '<td class="mono">' + esc(e.tool_name) + "</td>" +
-    '<td>' + (e.agent_id ? '<span class="agent">' + esc(e.agent_id) + "</span>" : '<span class="faint">&#8212;</span>') + "</td>" +
+    '<td>' + (e.agent_id ? '<span class="agent" title="' + esc(e.agent_meta || "") + '">' + esc(e.agent_id) + "</span>" : '<span class="faint">&#8212;</span>') + "</td>" +
     '<td><span class="pill ' + e.status + '"><i></i>' + e.status.replace("_", " ") + "</span></td>" +
     '<td class="mono dim">' + (fmtDur(e) || '<span class="elapsed" data-since="' + e.created_at + '">' + fmtElapsed(e.created_at) + "</span>&#8230;") + "</td>" +
     "<td><code class=\"clip\">" + esc(e.args_json || "") + "</code></td>" +
@@ -550,6 +554,7 @@ function rowHtml(e) {
       '<div class="k">' + (e.status === "FAILED" ? "error" : "output") +
       ' <button data-action="copy" data-copy="' + esc(out) + '">copy</button></div>' +
       '<pre class="code">' + hljson(out || "(none yet)") + "</pre>" +
+      (e.agent_meta ? '<div class="k">agent metadata</div><pre class="code">' + hljson(e.agent_meta) + "</pre>" : "") +
       (e.reasoning ? '<div class="k">agent reasoning</div><div class="why">&#8220;' + esc(e.reasoning) + "&#8221;</div>" : "") +
       (e.status === "WAITING_APPROVAL" ? '<div class="detail-actions">' + actionButtons(e) + "</div>" : "") +
       "</td></tr>";
@@ -634,11 +639,16 @@ document.addEventListener("click", async ev => {
 
   if (a === "approve" || a === "reject") {
     ev.stopPropagation();
+    let note = "";
+    if (a === "reject") {
+      note = window.prompt("Reason for rejection (the blocked caller will see this):", "");
+      if (note === null) return;  // cancelled: don't reject at all
+    }
     t.disabled = true;
     try {
       const res = await fetch("/api/" + a, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source: t.dataset.source, execution_id: t.dataset.id }),
+        body: JSON.stringify({ source: t.dataset.source, execution_id: t.dataset.id, note: note }),
       });
       const body = await res.json();
       if (body.ok) toast((a === "approve" ? "✓ approved " : "✕ rejected ") + t.dataset.id.slice(0, 8), a === "approve" ? "ok" : "bad");

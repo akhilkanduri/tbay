@@ -159,6 +159,7 @@ class RedisBackend(StorageBackend):
             embedding_json=data.get("embedding_json"),
             reasoning=data.get("reasoning"),
             agent_id=data.get("agent_id"),
+            agent_meta=data.get("agent_meta"),
         )
 
     def init_schema(self) -> None:
@@ -182,6 +183,7 @@ class RedisBackend(StorageBackend):
         embedding_json=None,
         reasoning=None,
         agent_id=None,
+        agent_meta=None,
     ) -> AcquireResult:
         now = time.time()
         record_fields = self._record_to_fields(
@@ -199,6 +201,7 @@ class RedisBackend(StorageBackend):
                 "embedding_json": embedding_json,
                 "reasoning": reasoning,
                 "agent_id": agent_id,
+                "agent_meta": agent_meta,
             }
         )
         outcome = self._acquire_script(
@@ -304,11 +307,14 @@ class RedisBackend(StorageBackend):
     def get_approval_status(self, execution_id: str) -> Optional[str]:
         return self._r.hget(self._approval_key(execution_id), "status")
 
-    def resolve_approval(self, execution_id: str, approved: bool, resolver: str = "", signature=None) -> None:
+    def resolve_approval(self, execution_id: str, approved: bool, resolver: str = "", signature=None,
+                         note=None) -> None:
         status = APPROVAL_APPROVED if approved else APPROVAL_REJECTED
         mapping = {"status": status, "resolved_at": str(time.time()), "resolver": resolver}
         if signature:
             mapping["signature"] = signature
+        if note:
+            mapping["note"] = note
         self._r.hset(self._approval_key(execution_id), mapping=mapping)
 
     def get_approval(self, execution_id: str):

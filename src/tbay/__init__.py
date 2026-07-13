@@ -1,5 +1,5 @@
 from .client import TbayClient
-from .context import agent, current_agent, current_reasoning, reasoning
+from .context import agent, current_agent, current_agent_meta, current_reasoning, reasoning
 from .decorator import guarded
 from .embedders import HashingEmbedder, cosine_similarity
 from .security import sign_approval, verify_approval
@@ -22,6 +22,7 @@ __all__ = [
     "current_reasoning",
     "agent",
     "current_agent",
+    "current_agent_meta",
     "sign_approval",
     "verify_approval",
     "HashingEmbedder",

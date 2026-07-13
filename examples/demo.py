@@ -2,15 +2,17 @@
 
     uv run python examples/demo.py
 
-Where it stores state:
+Where it stores state: Postgres, always.
   - Inside the dev container, TBAY_DB_URL is already set to the bundled
     Postgres and TBAY_TEST_REDIS_URL to the bundled Redis, so this demo
     uses both automatically and its calls show up live on the dashboard
     (`uv run python dashboard/app.py`, port 8787).
-  - Outside the container, with no env vars set, it falls back to a local
-    SQLite file (sqlite:///~/.tbay/demo.sqlite) and skips the Redis part.
-    Point TBAY_DB_URL / TBAY_TEST_REDIS_URL at your own servers to change
-    that.
+  - Outside the container the same default DSN
+    (postgresql://postgres:tbay@localhost:5432/tbay) still works while the
+    dev container is open, because it forwards port 5432 to your machine.
+    Point TBAY_DB_URL at any other Postgres to use that instead. There is
+    no SQLite fallback here; if Postgres isn't reachable, the demo says so
+    and exits instead of silently writing somewhere else.
 
 What it walks through, in order:
   1. readonly caching        an identical call is served from cache
@@ -33,11 +35,19 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from tbay import ApprovalRejected, TbayClient, agent, guarded, reasoning
 
-DB_URL = os.environ.get("TBAY_DB_URL", "sqlite:///~/.tbay/demo.sqlite")
+DB_URL = os.environ.get("TBAY_DB_URL", "postgresql://postgres:tbay@localhost:5432/tbay")
 REDIS_URL = os.environ.get("TBAY_TEST_REDIS_URL")  # set by the dev container
 WEBHOOK_PORT = 9911
 
-client = TbayClient(DB_URL, poll_interval=0.25)
+try:
+    client = TbayClient(DB_URL, poll_interval=0.25)
+except Exception as exc:
+    raise SystemExit(
+        f"could not connect to Postgres at {DB_URL}\n"
+        f"  ({exc})\n"
+        "open the repo's dev container (it bundles Postgres and forwards port 5432),\n"
+        "or point TBAY_DB_URL at a Postgres you run."
+    )
 
 # Tuned in code so the demo is self-contained; in a real project these
 # live in your policy YAML file (see policy.example.yaml).
@@ -149,7 +159,8 @@ if __name__ == "__main__":
     print("  ", ask_llm_for_next_step("customer is angry"))
 
     print("\n5. reasoning + agent identity: WHO acted and WHY, stored next to the action")
-    with agent("support-agent-1"), reasoning("user reported the checkout page is down, escalating"):
+    with agent("support-agent-1", model="gpt-5", team="support", version="1.4"), \
+            reasoning("user reported the checkout page is down, escalating"):
         print("  ", create_ticket("checkout page outage"))
     print(f"   see both with: tbay --db-url {DB_URL} log --tool create_ticket")
 
@@ -181,7 +192,7 @@ if __name__ == "__main__":
     print("      then approve or reject from a second terminal:")
     print(f"        tbay --db-url {DB_URL} log --status WAITING_APPROVAL")
     print(f"        tbay --db-url {DB_URL} approve <execution_id>")
-    print(f"        tbay --db-url {DB_URL} reject  <execution_id>")
+    print(f'        tbay --db-url {DB_URL} reject  <execution_id> --reason "too large for auto-refund"')
     print("      or click Approve/Reject on the dashboard. This blocks until you do.")
 
     started = time.time()
@@ -189,8 +200,9 @@ if __name__ == "__main__":
         result = refund_customer("cust_2", 500.0)
         print(f"\n   approved after {time.time() - started:.0f}s; only then did the function run:")
         print("  ", result)
-    except ApprovalRejected:
+    except ApprovalRejected as exc:
         print(f"\n   rejected after {time.time() - started:.0f}s; the function never ran at all.")
+        print(f"   the caller learns why: {exc}")
 
     print("\ndone. inspect the full audit trail:")
     print(f"  tbay --db-url {DB_URL} log")

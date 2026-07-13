@@ -38,6 +38,7 @@ class ExecutionRecord:
     embedding_json: Optional[str] = None  # args embedding, present only when the policy has semantic_cache on
     reasoning: Optional[str] = None  # why the agent made this call, captured from `with tbay.reasoning(...)`
     agent_id: Optional[str] = None  # which agent asked for this call (with tbay.agent(...) / TBAY_AGENT_ID)
+    agent_meta: Optional[str] = None  # JSON metadata about that agent (model, team, version, ...)
 
 
 @dataclass
@@ -95,6 +96,7 @@ class StorageBackend:
         embedding_json: Optional[str] = None,
         reasoning: Optional[str] = None,
         agent_id: Optional[str] = None,
+        agent_meta: Optional[str] = None,
     ) -> AcquireResult:
         """Try to become the owner of this (tool_name, idempotency_key, tenant).
         If someone already owns it, report back what the caller should do instead.
@@ -122,7 +124,8 @@ class StorageBackend:
         raise NotImplementedError
 
     def resolve_approval(
-        self, execution_id: str, approved: bool, resolver: str = "", signature: Optional[str] = None
+        self, execution_id: str, approved: bool, resolver: str = "", signature: Optional[str] = None,
+        note: Optional[str] = None,
     ) -> None:
         """Record a human decision. `signature` is the HMAC from
         tbay.security.sign_approval; when the executing client is configured

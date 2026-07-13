@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS executions (
     embedding_json TEXT,
     reasoning TEXT,
     agent_id TEXT,
+    agent_meta TEXT,
     CONSTRAINT uq_tbay_execution UNIQUE (tool_name, idempotency_key, tenant)
 );
 CREATE TABLE IF NOT EXISTS approvals (
@@ -43,7 +44,8 @@ CREATE TABLE IF NOT EXISTS approvals (
     requested_at DOUBLE PRECISION NOT NULL,
     resolved_at DOUBLE PRECISION,
     resolver TEXT,
-    signature TEXT
+    signature TEXT,
+    note TEXT
 );
 -- Databases created by older tbay versions predate these columns; add them
 -- in place (after both CREATEs) so an upgrade never requires dropping the
@@ -51,7 +53,9 @@ CREATE TABLE IF NOT EXISTS approvals (
 ALTER TABLE executions ADD COLUMN IF NOT EXISTS embedding_json TEXT;
 ALTER TABLE executions ADD COLUMN IF NOT EXISTS reasoning TEXT;
 ALTER TABLE executions ADD COLUMN IF NOT EXISTS agent_id TEXT;
+ALTER TABLE executions ADD COLUMN IF NOT EXISTS agent_meta TEXT;
 ALTER TABLE approvals ADD COLUMN IF NOT EXISTS signature TEXT;
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS note TEXT;
 """
 
 
@@ -111,6 +115,7 @@ class PostgresBackend(StorageBackend):
             embedding_json=row["embedding_json"],
             reasoning=row["reasoning"],
             agent_id=row["agent_id"],
+            agent_meta=row["agent_meta"],
         )
 
     def _fetch_by_key(self, cur, tool_name, idempotency_key, tenant):
@@ -136,6 +141,7 @@ class PostgresBackend(StorageBackend):
         embedding_json=None,
         reasoning=None,
         agent_id=None,
+        agent_meta=None,
     ) -> AcquireResult:
         conn = self._connect()
         try:
@@ -164,8 +170,8 @@ class PostgresBackend(StorageBackend):
                     """
                     INSERT INTO executions
                         (id, tool_name, idempotency_key, tenant, status, args_hash, args_json, policy_name,
-                         created_at, embedding_json, reasoning, agent_id)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         created_at, embedding_json, reasoning, agent_id, agent_meta)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (tool_name, idempotency_key, tenant) DO NOTHING
                     """,
                     (
@@ -181,6 +187,7 @@ class PostgresBackend(StorageBackend):
                         embedding_json,
                         reasoning,
                         agent_id,
+                        agent_meta,
                     ),
                 )
                 if cur.rowcount == 1:
@@ -302,15 +309,16 @@ class PostgresBackend(StorageBackend):
         finally:
             conn.close()
 
-    def resolve_approval(self, execution_id: str, approved: bool, resolver: str = "", signature=None) -> None:
+    def resolve_approval(self, execution_id: str, approved: bool, resolver: str = "", signature=None,
+                         note=None) -> None:
         conn = self._connect()
         try:
             status = APPROVAL_APPROVED if approved else APPROVAL_REJECTED
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE approvals SET status=%s, resolved_at=%s, resolver=%s, signature=%s "
+                    "UPDATE approvals SET status=%s, resolved_at=%s, resolver=%s, signature=%s, note=%s "
                     "WHERE execution_id=%s",
-                    (status, time.time(), resolver, signature, execution_id),
+                    (status, time.time(), resolver, signature, note, execution_id),
                 )
             conn.commit()
         finally:

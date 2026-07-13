@@ -135,3 +135,37 @@ def test_unsigned_approval_still_works_without_secret(client):
     thread.join(timeout=5)
 
     assert outcome.get("result") == {"ran": 1}
+
+
+# -- agent metadata and rejection reasons ---------------------------------------
+
+
+def test_agent_metadata_recorded(client):
+    @guarded(client, policy="mutating")
+    def act(x: int) -> dict:
+        return {"x": x}
+
+    with agent("billing-agent-7", model="gpt-5", team="payments"):
+        act(1)
+
+    record = client.backend.list_executions(tool_name="act")[0]
+    assert record.agent_id == "billing-agent-7"
+    import json
+    assert json.loads(record.agent_meta) == {"model": "gpt-5", "team": "payments"}
+
+
+def test_rejection_reason_reaches_the_caller(client):
+    client.policies["destructive"].approval_timeout = 10.0
+    outcome = {}
+    thread, execution_id = _start_blocked_call(client, outcome)
+
+    client.backend.resolve_approval(
+        execution_id, approved=False, resolver="operator", note="amount exceeds daily refund budget"
+    )
+    thread.join(timeout=5)
+
+    assert isinstance(outcome.get("error"), ApprovalRejected)
+    assert "amount exceeds daily refund budget" in str(outcome["error"])
+    # and the audit log carries it too
+    record = client.backend.get(execution_id)
+    assert "amount exceeds daily refund budget" in record.error
