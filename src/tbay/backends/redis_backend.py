@@ -158,6 +158,8 @@ class RedisBackend(StorageBackend):
             finished_at=float(data["finished_at"]) if data.get("finished_at") else None,
             embedding_json=data.get("embedding_json"),
             reasoning=data.get("reasoning"),
+            agent_id=data.get("agent_id"),
+            agent_meta=data.get("agent_meta"),
         )
 
     def init_schema(self) -> None:
@@ -180,6 +182,8 @@ class RedisBackend(StorageBackend):
         max_concurrent=None,
         embedding_json=None,
         reasoning=None,
+        agent_id=None,
+        agent_meta=None,
     ) -> AcquireResult:
         now = time.time()
         record_fields = self._record_to_fields(
@@ -196,6 +200,8 @@ class RedisBackend(StorageBackend):
                 "created_at": now,
                 "embedding_json": embedding_json,
                 "reasoning": reasoning,
+                "agent_id": agent_id,
+                "agent_meta": agent_meta,
             }
         )
         outcome = self._acquire_script(
@@ -301,12 +307,19 @@ class RedisBackend(StorageBackend):
     def get_approval_status(self, execution_id: str) -> Optional[str]:
         return self._r.hget(self._approval_key(execution_id), "status")
 
-    def resolve_approval(self, execution_id: str, approved: bool, resolver: str = "") -> None:
+    def resolve_approval(self, execution_id: str, approved: bool, resolver: str = "", signature=None,
+                         note=None) -> None:
         status = APPROVAL_APPROVED if approved else APPROVAL_REJECTED
-        self._r.hset(
-            self._approval_key(execution_id),
-            mapping={"status": status, "resolved_at": str(time.time()), "resolver": resolver},
-        )
+        mapping = {"status": status, "resolved_at": str(time.time()), "resolver": resolver}
+        if signature:
+            mapping["signature"] = signature
+        if note:
+            mapping["note"] = note
+        self._r.hset(self._approval_key(execution_id), mapping=mapping)
+
+    def get_approval(self, execution_id: str):
+        data = self._r.hgetall(self._approval_key(execution_id))
+        return data or None
 
     def list_executions(
         self, *, tool_name=None, status=None, tenant=None, limit=50
@@ -345,3 +358,17 @@ class RedisBackend(StorageBackend):
             if len(results) >= limit:
                 break
         return results
+
+    def clear(self) -> int:
+        # Only tbay's own keys (everything under the prefix), never a blind
+        # FLUSHDB: the Redis database may hold other applications' data.
+        removed = self._r.zcard(self._log_key())
+        batch = []
+        for key in self._r.scan_iter(match=f"{self._p}*", count=500):
+            batch.append(key)
+            if len(batch) >= 500:
+                self._r.delete(*batch)
+                batch = []
+        if batch:
+            self._r.delete(*batch)
+        return removed

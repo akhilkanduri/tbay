@@ -37,6 +37,8 @@ class ExecutionRecord:
     finished_at: Optional[float]
     embedding_json: Optional[str] = None  # args embedding, present only when the policy has semantic_cache on
     reasoning: Optional[str] = None  # why the agent made this call, captured from `with tbay.reasoning(...)`
+    agent_id: Optional[str] = None  # which agent asked for this call (with tbay.agent(...) / TBAY_AGENT_ID)
+    agent_meta: Optional[str] = None  # JSON metadata about that agent (model, team, version, ...)
 
 
 @dataclass
@@ -93,6 +95,8 @@ class StorageBackend:
         max_concurrent: Optional[int] = None,
         embedding_json: Optional[str] = None,
         reasoning: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        agent_meta: Optional[str] = None,
     ) -> AcquireResult:
         """Try to become the owner of this (tool_name, idempotency_key, tenant).
         If someone already owns it, report back what the caller should do instead.
@@ -119,7 +123,20 @@ class StorageBackend:
     def get_approval_status(self, execution_id: str) -> Optional[str]:
         raise NotImplementedError
 
-    def resolve_approval(self, execution_id: str, approved: bool, resolver: str = "") -> None:
+    def resolve_approval(
+        self, execution_id: str, approved: bool, resolver: str = "", signature: Optional[str] = None,
+        note: Optional[str] = None,
+    ) -> None:
+        """Record a human decision. `signature` is the HMAC from
+        tbay.security.sign_approval; when the executing client is configured
+        with an approval secret, it verifies this before running (see
+        src/tbay/security.py for the whole trust model)."""
+        raise NotImplementedError
+
+    def get_approval(self, execution_id: str) -> Optional[dict]:
+        """The full approval row (status/resolver/signature/timestamps) or
+        None. get_approval_status stays for cheap polling; this exists so the
+        client can verify the signature on the final decision."""
         raise NotImplementedError
 
     def list_executions(
@@ -142,6 +159,12 @@ class StorageBackend:
         embedding and whose cached result hasn't expired. The client compares
         these against a new call's embedding to find a semantic cache hit;
         the cosine math happens in the client, so backends only filter."""
+        raise NotImplementedError
+
+    def clear(self) -> int:
+        """Delete every execution and approval this backend stores. Returns
+        how many executions were removed. Backs `tbay clear`; there is no
+        undo, so the CLI asks for confirmation before calling this."""
         raise NotImplementedError
 
     # -- generic polling helpers, shared by every backend --

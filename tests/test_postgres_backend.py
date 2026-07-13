@@ -63,3 +63,72 @@ def test_max_concurrent_is_atomic_over_postgres(pg_client):
 
     assert peak
     assert max(peak) == 1
+
+
+def test_clear_wipes_everything_over_postgres(pg_client):
+    tool_name = f"pg_clear_{uuid.uuid4().hex}"
+
+    @guarded(pg_client, policy="mutating", tool_name=tool_name)
+    def act(x: int) -> dict:
+        return {"x": x}
+
+    act(1)
+    assert pg_client.backend.clear() >= 1
+    assert pg_client.backend.list_executions() == []
+
+
+def test_agent_identity_and_metadata_over_postgres(pg_client):
+    import json
+
+    from tbay import agent
+
+    tool_name = f"pg_agent_{uuid.uuid4().hex}"
+
+    @guarded(pg_client, policy="mutating", tool_name=tool_name)
+    def act(x: int) -> dict:
+        return {"x": x}
+
+    with agent("billing-agent-7", model="gpt-5", team="payments"):
+        act(1)
+
+    record = pg_client.backend.list_executions(tool_name=tool_name)[0]
+    assert record.agent_id == "billing-agent-7"
+    assert json.loads(record.agent_meta) == {"model": "gpt-5", "team": "payments"}
+
+
+def test_rejection_reason_over_postgres(pg_client):
+    import pytest as _pytest
+
+    from tbay import ApprovalRejected
+
+    tool_name = f"pg_reject_{uuid.uuid4().hex}"
+    pg_client.policies["destructive"].approval_timeout = 10.0
+
+    @guarded(pg_client, policy="destructive", tool_name=tool_name)
+    def dangerous(x: int) -> dict:
+        return {"ran": x}
+
+    outcome = {}
+
+    def call():
+        try:
+            outcome["result"] = dangerous(1)
+        except Exception as exc:
+            outcome["error"] = exc
+
+    t = threading.Thread(target=call, daemon=True)
+    t.start()
+    deadline = time.time() + 5
+    execution_id = None
+    while time.time() < deadline and execution_id is None:
+        waiting = pg_client.backend.list_executions(tool_name=tool_name, status="WAITING_APPROVAL")
+        if waiting:
+            execution_id = waiting[0].id
+        else:
+            time.sleep(0.02)
+    assert execution_id, "never reached WAITING_APPROVAL"
+
+    pg_client.backend.resolve_approval(execution_id, approved=False, resolver="op", note="budget exceeded")
+    t.join(timeout=5)
+    assert isinstance(outcome.get("error"), ApprovalRejected)
+    assert "budget exceeded" in str(outcome["error"])

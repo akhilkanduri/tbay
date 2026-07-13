@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS executions (
     finished_at REAL,
     embedding_json TEXT,
     reasoning TEXT,
+    agent_id TEXT,
+    agent_meta TEXT,
     UNIQUE (tool_name, idempotency_key, tenant)
 );
 CREATE TABLE IF NOT EXISTS approvals (
@@ -43,7 +45,9 @@ CREATE TABLE IF NOT EXISTS approvals (
     status TEXT NOT NULL,
     requested_at REAL NOT NULL,
     resolved_at REAL,
-    resolver TEXT
+    resolver TEXT,
+    signature TEXT,
+    note TEXT
 );
 """
 
@@ -94,9 +98,14 @@ class SQLiteBackend(StorageBackend):
             conn.executescript(SCHEMA)
             # Databases created by tbay < 0.2.0 predate these columns; add
             # them in place so an upgrade never requires dropping the table.
-            for column in ("embedding_json TEXT", "reasoning TEXT"):
+            for column in ("embedding_json TEXT", "reasoning TEXT", "agent_id TEXT", "agent_meta TEXT"):
                 try:
                     conn.execute(f"ALTER TABLE executions ADD COLUMN {column}")
+                except sqlite3.OperationalError:
+                    pass  # column already exists
+            for column in ("signature TEXT", "note TEXT"):
+                try:
+                    conn.execute(f"ALTER TABLE approvals ADD COLUMN {column}")
                 except sqlite3.OperationalError:
                     pass  # column already exists
             conn.commit()
@@ -122,6 +131,8 @@ class SQLiteBackend(StorageBackend):
             finished_at=row["finished_at"],
             embedding_json=row["embedding_json"],
             reasoning=row["reasoning"],
+            agent_id=row["agent_id"],
+            agent_meta=row["agent_meta"],
         )
 
     def _fetch_by_key(self, conn, tool_name, idempotency_key, tenant) -> Optional[sqlite3.Row]:
@@ -145,6 +156,8 @@ class SQLiteBackend(StorageBackend):
         max_concurrent=None,
         embedding_json=None,
         reasoning=None,
+        agent_id=None,
+        agent_meta=None,
     ) -> AcquireResult:
         conn = self._connect()
         try:
@@ -171,8 +184,8 @@ class SQLiteBackend(StorageBackend):
                 """
                 INSERT INTO executions
                     (id, tool_name, idempotency_key, tenant, status, args_hash, args_json, policy_name,
-                     created_at, embedding_json, reasoning)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     created_at, embedding_json, reasoning, agent_id, agent_meta)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(tool_name, idempotency_key, tenant) DO NOTHING
                 """,
                 (
@@ -187,6 +200,8 @@ class SQLiteBackend(StorageBackend):
                     time.time(),
                     embedding_json,
                     reasoning,
+                    agent_id,
+                    agent_meta,
                 ),
             )
             if cur.rowcount == 1:
@@ -301,15 +316,25 @@ class SQLiteBackend(StorageBackend):
         finally:
             conn.close()
 
-    def resolve_approval(self, execution_id: str, approved: bool, resolver: str = "") -> None:
+    def resolve_approval(self, execution_id: str, approved: bool, resolver: str = "", signature=None,
+                         note=None) -> None:
         conn = self._connect()
         try:
             status = APPROVAL_APPROVED if approved else APPROVAL_REJECTED
             conn.execute(
-                "UPDATE approvals SET status=?, resolved_at=?, resolver=? WHERE execution_id=?",
-                (status, time.time(), resolver, execution_id),
+                "UPDATE approvals SET status=?, resolved_at=?, resolver=?, signature=?, note=? "
+                "WHERE execution_id=?",
+                (status, time.time(), resolver, signature, note, execution_id),
             )
             conn.commit()
+        finally:
+            conn.close()
+
+    def get_approval(self, execution_id: str):
+        conn = self._connect()
+        try:
+            row = conn.execute("SELECT * FROM approvals WHERE execution_id=?", (execution_id,)).fetchone()
+            return dict(row) if row else None
         finally:
             conn.close()
 
@@ -358,5 +383,15 @@ class SQLiteBackend(StorageBackend):
                 (tool_name, tenant, SUCCEEDED, time.time(), limit),
             ).fetchall()
             return [self._row_to_record(r) for r in rows]
+        finally:
+            conn.close()
+
+    def clear(self) -> int:
+        conn = self._connect()
+        try:
+            conn.execute("DELETE FROM approvals")  # references executions, so it goes first
+            removed = conn.execute("DELETE FROM executions").rowcount
+            conn.commit()
+            return removed
         finally:
             conn.close()

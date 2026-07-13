@@ -19,6 +19,21 @@
 - Dev container (`.devcontainer/`) with Python 3.12 + uv, Postgres, and
   Redis preconfigured, so the examples and the full test suite (including
   the Postgres- and Redis-gated tests) run with zero local setup.
+- Agent identity with metadata: `with tbay.agent("billing-agent-7",
+  model="gpt-5", team="payments")`, TbayClient(agent_id=..., agent_meta=...),
+  or TBAY_AGENT_ID records WHICH agent asked for every call, shown in
+  `tbay log` and the dashboard (chip, column, and metadata JSON in detail).
+- Rejection reasons: `tbay reject <id> --reason "..."` (the dashboard
+  prompts for one); the blocked caller's ApprovalRejected error and the
+  audit log both carry it.
+- Documentation split into docs/ (quickstart, policies, caching, approvals,
+  observability, backends, API reference); the demo is Postgres-only.
+- Signed approvals: with an approval secret configured (TBAY_APPROVAL_SECRET
+  or TbayClient(approval_secret=...)), approvals carry an HMAC signature the
+  executing client verifies before running, so raw database credentials
+  alone can no longer approve anything.
+- `tbay clear` CLI command to wipe all executions/approvals (Redis variant
+  deletes only tbay's own keys).
 - Monitoring dashboard (`dashboard/`, standalone, not part of the package):
   a single-file web app showing live in-flight calls with elapsed timers,
   paused approvals with Approve/Reject buttons, and every execution's

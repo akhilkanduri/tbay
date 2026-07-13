@@ -149,3 +149,19 @@ def test_reasoning_recorded_over_redis(redis_client):
 
     records = redis_client.backend.list_executions(tool_name=tool_name)
     assert records[0].reasoning == "verifying the redis audit trail"
+
+
+def test_clear_wipes_only_tbay_keys_over_redis(redis_client):
+    tool_name = f"redis_clear_{uuid.uuid4().hex}"
+
+    @guarded(redis_client, policy="mutating", tool_name=tool_name)
+    def act(x: int) -> dict:
+        return {"x": x}
+
+    act(1)
+    # plant a non-tbay key to prove clear() never touches other data
+    redis_client.backend._r.set("someone-elses-key", "keep me")
+    assert redis_client.backend.clear() == 1
+    assert redis_client.backend.list_executions() == []
+    assert redis_client.backend._r.get("someone-elses-key") == "keep me"
+    redis_client.backend._r.delete("someone-elses-key")
