@@ -1,7 +1,8 @@
 from .client import TbayClient
-from .context import current_reasoning, reasoning
+from .context import agent, current_agent, current_reasoning, reasoning
 from .decorator import guarded
 from .embedders import HashingEmbedder, cosine_similarity
+from .security import sign_approval, verify_approval
 from .exceptions import (
     ApprovalRejected,
     ApprovalTimeout,
@@ -19,6 +20,10 @@ __all__ = [
     "guarded",
     "reasoning",
     "current_reasoning",
+    "agent",
+    "current_agent",
+    "sign_approval",
+    "verify_approval",
     "HashingEmbedder",
     "cosine_similarity",
     "TbayError",

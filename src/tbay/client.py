@@ -10,9 +10,12 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Any, Callable, Dict, Optional
 
+import os
+
 from .backends.base import AcquireResult, APPROVAL_APPROVED, FAILED, StorageBackend, SUCCEEDED
-from .context import current_reasoning
+from .context import current_agent, current_reasoning
 from .embedders import cosine_similarity
+from .security import verify_approval
 from .exceptions import (
     ApprovalRejected,
     ApprovalTimeout,
@@ -87,6 +90,8 @@ class TbayClient:
         policy_file: Optional[str] = None,
         poll_interval: float = 0.25,
         embedder=None,
+        agent_id: Optional[str] = None,
+        approval_secret: Optional[str] = None,
     ):
         self.backend = _make_backend(db_url)
         self.backend.init_schema()
@@ -96,6 +101,14 @@ class TbayClient:
         # embed(text) -> list[float] method works; when left as None, the
         # zero-dependency HashingEmbedder is created on first use.
         self._embedder = embedder
+        # Recorded on every execution this client starts, so the audit log
+        # shows WHICH agent asked. A surrounding `with tbay.agent(...)` block
+        # overrides this per call (see src/tbay/context.py).
+        self.agent_id = agent_id or os.environ.get("TBAY_AGENT_ID")
+        # When set, an approval only counts if it carries a valid HMAC
+        # signature made with this secret, so raw database credentials alone
+        # can no longer approve anything (see src/tbay/security.py).
+        self.approval_secret = approval_secret or os.environ.get("TBAY_APPROVAL_SECRET")
 
     def get_policy(self, name: str) -> Policy:
         if name not in self.policies:
@@ -151,6 +164,15 @@ class TbayClient:
         except (TypeError, ValueError):
             return True
 
+    def _verify_approval_signature(self, execution_id: str) -> bool:
+        """With an approval secret configured, an 'approved' row only counts
+        if its signature verifies. Without one, any approved row counts
+        (the pre-signing behavior)."""
+        if not self.approval_secret:
+            return True
+        approval = self.backend.get_approval(execution_id) or {}
+        return verify_approval(self.approval_secret, execution_id, True, approval.get("signature"))
+
     def _fire_webhook(self, url: str, execution_id: str, tool_name: str) -> None:
         # Best effort only. If this fails (network blip, bad URL, whatever),
         # the execution still sits in WAITING_APPROVAL and `tbay approve`
@@ -195,7 +217,8 @@ class TbayClient:
 
     def _acquire_gated(self, pol: Policy, tool_name: str, idempotency_key: str, tenant: str,
                         policy_name: str, args_hash: str, args_json: str,
-                        embedding_json: Optional[str] = None, reasoning: Optional[str] = None) -> AcquireResult:
+                        embedding_json: Optional[str] = None, reasoning: Optional[str] = None,
+                        agent_id: Optional[str] = None) -> AcquireResult:
         """Call acquire_or_get(), retrying while max_concurrent holds it at
         "wait_for_slot" (see StorageBackend.acquire_or_get: the RUNNING count
         and the insert happen in one atomic step there, so this loop can't
@@ -216,6 +239,7 @@ class TbayClient:
                 max_concurrent=pol.max_concurrent,
                 embedding_json=embedding_json,
                 reasoning=reasoning,
+                agent_id=agent_id,
             )
             if not acq.wait_for_slot:
                 return acq
@@ -229,7 +253,8 @@ class TbayClient:
     async def _acquire_gated_async(self, pol: Policy, tool_name: str, idempotency_key: str, tenant: str,
                                     policy_name: str, args_hash: str, args_json: str,
                                     embedding_json: Optional[str] = None,
-                                    reasoning: Optional[str] = None) -> AcquireResult:
+                                    reasoning: Optional[str] = None,
+                                    agent_id: Optional[str] = None) -> AcquireResult:
         deadline = time.time() + pol.concurrency_wait_timeout
         while True:
             acq = await asyncio.to_thread(
@@ -246,6 +271,7 @@ class TbayClient:
                 max_concurrent=pol.max_concurrent,
                 embedding_json=embedding_json,
                 reasoning=reasoning,
+                agent_id=agent_id,
             )
             if not acq.wait_for_slot:
                 return acq
@@ -288,10 +314,11 @@ class TbayClient:
         args_hash = _hash_args(normalized)
         args_json = _redacted_args_json(normalized, pol.redact_args)
         reasoning = current_reasoning()
+        agent_id = current_agent() or self.agent_id
 
         if not pol.idempotent:
             return self._run_volatile(fn, pol, args, kwargs, tenant, name, args_hash, args_json, normalized,
-                                      reasoning=reasoning)
+                                      reasoning=reasoning, agent_id=agent_id)
 
         embedding_json = None
         if pol.semantic_cache:
@@ -302,7 +329,7 @@ class TbayClient:
 
         idem_key = key_fn(*args, **kwargs) if key_fn else _default_key(name, normalized, tenant)
         acq = self._acquire_gated(pol, name, idem_key, tenant, policy, args_hash, args_json,
-                                  embedding_json=embedding_json, reasoning=reasoning)
+                                  embedding_json=embedding_json, reasoning=reasoning, agent_id=agent_id)
 
         if acq.use_cached:
             return json.loads(acq.record.result_json)
@@ -336,6 +363,13 @@ class TbayClient:
             if status != APPROVAL_APPROVED:
                 self.backend.fail(record.id, "rejected by approval")
                 raise ApprovalRejected(f"execution {record.id} was rejected")
+            if not self._verify_approval_signature(record.id):
+                self.backend.fail(record.id, "approval signature missing or invalid")
+                raise ApprovalRejected(
+                    f"execution {record.id} was marked approved WITHOUT a valid signature; "
+                    "refusing to run (an approval secret is configured, so decisions written "
+                    "straight into the database do not count)"
+                )
 
         try:
             if pol.execution_timeout:
@@ -360,6 +394,7 @@ class TbayClient:
         args_json: str,
         normalized: Dict[str, Any],
         reasoning: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ) -> Any:
         """Path for idempotent=False policies: an LLM call used to decide
         something, "roll a die", "get the current time". Every call gets its
@@ -371,7 +406,7 @@ class TbayClient:
         while True:
             execution_id = str(uuid.uuid4())
             acq = self._acquire_gated(pol, name, execution_id, tenant, pol.name, args_hash, args_json,
-                                      reasoning=reasoning)
+                                      reasoning=reasoning, agent_id=agent_id)
             self._guard_rate_limit(acq.record, pol, name, tenant)
             try:
                 return self._execute_as_owner(acq.record, fn, args, kwargs, pol, name, normalized)
@@ -401,10 +436,12 @@ class TbayClient:
         args_hash = _hash_args(normalized)
         args_json = _redacted_args_json(normalized, pol.redact_args)
         reasoning = current_reasoning()
+        agent_id = current_agent() or self.agent_id
 
         if not pol.idempotent:
             return await self._run_volatile_async(
-                fn, pol, args, kwargs, tenant, name, args_hash, args_json, normalized, reasoning=reasoning
+                fn, pol, args, kwargs, tenant, name, args_hash, args_json, normalized,
+                reasoning=reasoning, agent_id=agent_id
             )
 
         embedding_json = None
@@ -416,7 +453,8 @@ class TbayClient:
 
         idem_key = key_fn(*args, **kwargs) if key_fn else _default_key(name, normalized, tenant)
         acq = await self._acquire_gated_async(pol, name, idem_key, tenant, policy, args_hash, args_json,
-                                              embedding_json=embedding_json, reasoning=reasoning)
+                                              embedding_json=embedding_json, reasoning=reasoning,
+                                              agent_id=agent_id)
 
         if acq.use_cached:
             return json.loads(acq.record.result_json)
@@ -446,6 +484,13 @@ class TbayClient:
             if status != APPROVAL_APPROVED:
                 await asyncio.to_thread(self.backend.fail, record.id, "rejected by approval")
                 raise ApprovalRejected(f"execution {record.id} was rejected")
+            if not await asyncio.to_thread(self._verify_approval_signature, record.id):
+                await asyncio.to_thread(self.backend.fail, record.id, "approval signature missing or invalid")
+                raise ApprovalRejected(
+                    f"execution {record.id} was marked approved WITHOUT a valid signature; "
+                    "refusing to run (an approval secret is configured, so decisions written "
+                    "straight into the database do not count)"
+                )
 
         try:
             if pol.execution_timeout:
@@ -476,12 +521,13 @@ class TbayClient:
         args_json: str,
         normalized: Dict[str, Any],
         reasoning: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ) -> Any:
         attempt = 0
         while True:
             execution_id = str(uuid.uuid4())
             acq = await self._acquire_gated_async(pol, name, execution_id, tenant, pol.name, args_hash,
-                                                  args_json, reasoning=reasoning)
+                                                  args_json, reasoning=reasoning, agent_id=agent_id)
             await self._guard_rate_limit_async(acq.record, pol, name, tenant)
             try:
                 return await self._execute_as_owner_async(acq.record, fn, args, kwargs, pol, name, normalized)

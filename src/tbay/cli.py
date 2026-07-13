@@ -5,6 +5,7 @@ import os
 import click
 
 from .client import TbayClient
+from .security import sign_approval
 
 DEFAULT_DB = os.environ.get("TBAY_DB_URL", "sqlite:///~/.tbay/db.sqlite")
 
@@ -32,9 +33,18 @@ def main(ctx, db_url, policy_file):
 @click.option("--resolver", default="cli", help="Who's approving this, recorded in the audit log")
 @click.pass_context
 def approve(ctx, execution_id, resolver):
-    """Approve a paused (WAITING_APPROVAL) execution so it can go ahead and run."""
-    ctx.obj["client"].backend.resolve_approval(execution_id, approved=True, resolver=resolver)
-    click.echo(f"approved {execution_id}")
+    """Approve a paused (WAITING_APPROVAL) execution so it can go ahead and run.
+
+    With TBAY_APPROVAL_SECRET set, the decision is signed; executing clients
+    configured with the same secret verify that signature before running, so
+    database credentials alone can't approve (see src/tbay/security.py).
+    """
+    secret = os.environ.get("TBAY_APPROVAL_SECRET")
+    signature = sign_approval(secret, execution_id, True) if secret else None
+    ctx.obj["client"].backend.resolve_approval(
+        execution_id, approved=True, resolver=resolver, signature=signature
+    )
+    click.echo(f"approved {execution_id}" + (" (signed)" if signature else ""))
 
 
 @main.command()
@@ -43,8 +53,12 @@ def approve(ctx, execution_id, resolver):
 @click.pass_context
 def reject(ctx, execution_id, resolver):
     """Reject a paused (WAITING_APPROVAL) execution. The tool call never runs."""
-    ctx.obj["client"].backend.resolve_approval(execution_id, approved=False, resolver=resolver)
-    click.echo(f"rejected {execution_id}")
+    secret = os.environ.get("TBAY_APPROVAL_SECRET")
+    signature = sign_approval(secret, execution_id, False) if secret else None
+    ctx.obj["client"].backend.resolve_approval(
+        execution_id, approved=False, resolver=resolver, signature=signature
+    )
+    click.echo(f"rejected {execution_id}" + (" (signed)" if signature else ""))
 
 
 @main.command(name="log")
@@ -68,6 +82,8 @@ def log_cmd(ctx, tool_name, status, tenant, limit, show_args):
         return
     for r in records:
         line = f"{r.id}  {r.status:16s} {r.tool_name:24s} policy={r.policy_name}"
+        if r.agent_id:
+            line += f"  agent={r.agent_id}"
         if show_args and r.args_json:
             line += f"  args={r.args_json}"
         if r.reasoning:

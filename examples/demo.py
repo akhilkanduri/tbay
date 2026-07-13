@@ -31,7 +31,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from tbay import ApprovalRejected, TbayClient, guarded, reasoning
+from tbay import ApprovalRejected, TbayClient, agent, guarded, reasoning
 
 DB_URL = os.environ.get("TBAY_DB_URL", "sqlite:///~/.tbay/demo.sqlite")
 REDIS_URL = os.environ.get("TBAY_TEST_REDIS_URL")  # set by the dev container
@@ -148,10 +148,10 @@ if __name__ == "__main__":
     print("  ", ask_llm_for_next_step("customer is angry"))
     print("  ", ask_llm_for_next_step("customer is angry"))
 
-    print("\n5. reasoning audit: WHY the agent acted, stored next to the action")
-    with reasoning("user reported the checkout page is down, escalating"):
+    print("\n5. reasoning + agent identity: WHO acted and WHY, stored next to the action")
+    with agent("support-agent-1"), reasoning("user reported the checkout page is down, escalating"):
         print("  ", create_ticket("checkout page outage"))
-    print(f"   see it with: tbay --db-url {DB_URL} log --tool create_ticket")
+    print(f"   see both with: tbay --db-url {DB_URL} log --tool create_ticket")
 
     print("\n6. redis backend: the same guarantees, coordinated through Redis")
     if REDIS_URL:

@@ -24,6 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from tbay import TbayClient
+from tbay.security import sign_approval
 
 # The dashboard never writes executions, it only reads them (and resolves
 # approvals). One TbayClient per --db URL; the backend does all the work.
@@ -55,6 +56,7 @@ def _record_to_dict(record, source: str) -> dict:
         "result_json": record.result_json,
         "error": record.error,
         "reasoning": record.reasoning,
+        "agent_id": record.agent_id,
         "retry_count": record.retry_count,
         "created_at": record.created_at,
         "finished_at": record.finished_at,
@@ -99,8 +101,13 @@ def resolve_approval(source: str, execution_id: str, approved: bool) -> dict:
         return {"ok": False, "error": f"execution {execution_id[:8]} has no approval request"}
     if current != "pending":
         return {"ok": False, "error": f"execution {execution_id[:8]} was already {current}"}
-    client.backend.resolve_approval(execution_id, approved=approved, resolver="dashboard")
-    return {"ok": True}
+    # With TBAY_APPROVAL_SECRET set, sign the decision; executing clients
+    # configured with the same secret verify it before running, so database
+    # credentials alone can't approve (see src/tbay/security.py).
+    secret = os.environ.get("TBAY_APPROVAL_SECRET")
+    signature = sign_approval(secret, execution_id, approved) if secret else None
+    client.backend.resolve_approval(execution_id, approved=approved, resolver="dashboard", signature=signature)
+    return {"ok": True, "signed": bool(signature)}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -266,6 +273,8 @@ PAGE = r"""<!doctype html>
     color: var(--ac); background: color-mix(in srgb, var(--ac) 13%, transparent);
     border: 1px solid color-mix(in srgb, var(--ac) 35%, transparent); }
   .elapsed { font: 12px var(--mono); color: var(--dim); }
+  .agent { font: 11px var(--mono); color: var(--violet); background: rgba(167,139,250,.1);
+    border: 1px solid rgba(167,139,250,.3); border-radius: 999px; padding: 2px 10px; }
   .fcard code, td code { font: 11.5px var(--mono); color: var(--dim);
     background: rgba(3,6,14,.55); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; }
   .fcard code { flex: 1 1 240px; overflow-wrap: anywhere; }
@@ -409,7 +418,7 @@ PAGE = r"""<!doctype html>
 <div class="table-wrap panel">
   <table>
     <thead><tr>
-      <th>when</th><th>tool</th><th>status</th><th>duration</th>
+      <th>when</th><th>tool</th><th>agent</th><th>status</th><th>duration</th>
       <th>input</th><th>output</th><th>why</th><th>source</th>
     </tr></thead>
     <tbody id="rows"></tbody>
@@ -507,6 +516,7 @@ function renderFlight(execs) {
     return '<div class="fcard panel' + (waiting ? " waiting" : "") + '">' +
       '<span class="orb"></span>' +
       '<span class="tool">' + esc(e.tool_name) + "</span>" +
+      (e.agent_id ? '<span class="agent">&#129302; ' + esc(e.agent_id) + "</span>" : "") +
       '<span class="tag">' + (waiting ? "awaiting human" : "executing") + "</span>" +
       '<span class="elapsed" data-since="' + e.created_at + '">' + fmtElapsed(e.created_at) + "</span>" +
       "<code>" + esc(e.args_json || "") + "</code>" +
@@ -523,6 +533,7 @@ function rowHtml(e) {
     '<tr class="row' + (openNow ? " active-row" : "") + '" data-action="toggle" data-key="' + esc(key) + '">' +
     '<td class="mono dim" title="' + new Date(e.created_at * 1000).toISOString() + '">' + fmtAgo(e.created_at) + "</td>" +
     '<td class="mono">' + esc(e.tool_name) + "</td>" +
+    '<td>' + (e.agent_id ? '<span class="agent">' + esc(e.agent_id) + "</span>" : '<span class="faint">&#8212;</span>') + "</td>" +
     '<td><span class="pill ' + e.status + '"><i></i>' + e.status.replace("_", " ") + "</span></td>" +
     '<td class="mono dim">' + (fmtDur(e) || '<span class="elapsed" data-since="' + e.created_at + '">' + fmtElapsed(e.created_at) + "</span>&#8230;") + "</td>" +
     "<td><code class=\"clip\">" + esc(e.args_json || "") + "</code></td>" +
@@ -530,8 +541,9 @@ function rowHtml(e) {
     '<td class="dim"><span class="clip">' + esc(e.reasoning || "") + "</span></td>" +
     '<td class="mono faint">' + esc(e.source) + "</td></tr>";
   if (openNow) {
-    html += '<tr class="detail"><td colspan="8">' +
+    html += '<tr class="detail"><td colspan="9">' +
       '<div class="meta"><span>id <b>' + esc(e.id) + "</b></span><span>policy <b>" + esc(e.policy_name) + "</b></span>" +
+      "<span>agent <b>" + esc(e.agent_id || "(none)") + "</b></span>" +
       "<span>tenant <b>" + esc(e.tenant || "(none)") + "</b></span><span>retries <b>" + e.retry_count + "</b></span></div>" +
       '<div class="k">input args <button data-action="copy" data-copy="' + esc(e.args_json || "") + '">copy</button></div>' +
       '<pre class="code">' + hljson(e.args_json || "(not recorded)") + "</pre>" +
@@ -548,7 +560,7 @@ function rowHtml(e) {
 function renderTable(execs) {
   $("rows").innerHTML = execs.length
     ? execs.map(rowHtml).join("")
-    : '<tr><td colspan="8" class="empty">no executions match</td></tr>';
+    : '<tr><td colspan="9" class="empty">no executions match</td></tr>';
 }
 
 function drawSpark(execs) {

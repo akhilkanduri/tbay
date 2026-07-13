@@ -34,19 +34,24 @@ CREATE TABLE IF NOT EXISTS executions (
     finished_at DOUBLE PRECISION,
     embedding_json TEXT,
     reasoning TEXT,
+    agent_id TEXT,
     CONSTRAINT uq_tbay_execution UNIQUE (tool_name, idempotency_key, tenant)
 );
--- Databases created by tbay < 0.2.0 predate these columns; add them in
--- place so an upgrade never requires dropping the table.
-ALTER TABLE executions ADD COLUMN IF NOT EXISTS embedding_json TEXT;
-ALTER TABLE executions ADD COLUMN IF NOT EXISTS reasoning TEXT;
 CREATE TABLE IF NOT EXISTS approvals (
     execution_id TEXT PRIMARY KEY REFERENCES executions(id),
     status TEXT NOT NULL,
     requested_at DOUBLE PRECISION NOT NULL,
     resolved_at DOUBLE PRECISION,
-    resolver TEXT
+    resolver TEXT,
+    signature TEXT
 );
+-- Databases created by older tbay versions predate these columns; add them
+-- in place (after both CREATEs) so an upgrade never requires dropping the
+-- tables and a fresh database never references a missing one.
+ALTER TABLE executions ADD COLUMN IF NOT EXISTS embedding_json TEXT;
+ALTER TABLE executions ADD COLUMN IF NOT EXISTS reasoning TEXT;
+ALTER TABLE executions ADD COLUMN IF NOT EXISTS agent_id TEXT;
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS signature TEXT;
 """
 
 
@@ -105,6 +110,7 @@ class PostgresBackend(StorageBackend):
             finished_at=row["finished_at"],
             embedding_json=row["embedding_json"],
             reasoning=row["reasoning"],
+            agent_id=row["agent_id"],
         )
 
     def _fetch_by_key(self, cur, tool_name, idempotency_key, tenant):
@@ -129,6 +135,7 @@ class PostgresBackend(StorageBackend):
         max_concurrent=None,
         embedding_json=None,
         reasoning=None,
+        agent_id=None,
     ) -> AcquireResult:
         conn = self._connect()
         try:
@@ -157,8 +164,8 @@ class PostgresBackend(StorageBackend):
                     """
                     INSERT INTO executions
                         (id, tool_name, idempotency_key, tenant, status, args_hash, args_json, policy_name,
-                         created_at, embedding_json, reasoning)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         created_at, embedding_json, reasoning, agent_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (tool_name, idempotency_key, tenant) DO NOTHING
                     """,
                     (
@@ -173,6 +180,7 @@ class PostgresBackend(StorageBackend):
                         time.time(),
                         embedding_json,
                         reasoning,
+                        agent_id,
                     ),
                 )
                 if cur.rowcount == 1:
@@ -294,16 +302,27 @@ class PostgresBackend(StorageBackend):
         finally:
             conn.close()
 
-    def resolve_approval(self, execution_id: str, approved: bool, resolver: str = "") -> None:
+    def resolve_approval(self, execution_id: str, approved: bool, resolver: str = "", signature=None) -> None:
         conn = self._connect()
         try:
             status = APPROVAL_APPROVED if approved else APPROVAL_REJECTED
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE approvals SET status=%s, resolved_at=%s, resolver=%s WHERE execution_id=%s",
-                    (status, time.time(), resolver, execution_id),
+                    "UPDATE approvals SET status=%s, resolved_at=%s, resolver=%s, signature=%s "
+                    "WHERE execution_id=%s",
+                    (status, time.time(), resolver, signature, execution_id),
                 )
             conn.commit()
+        finally:
+            conn.close()
+
+    def get_approval(self, execution_id: str):
+        conn = self._connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM approvals WHERE execution_id=%s", (execution_id,))
+                row = cur.fetchone()
+            return dict(row) if row else None
         finally:
             conn.close()
 

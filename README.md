@@ -134,6 +134,27 @@ transit'` on that execution, which is usually the first thing a human
 approver or a post-incident review wants to know. Blocks nest, and
 concurrent async tasks each see their own reasoning text.
 
+## Agent identity
+
+In a multi-agent system, "which tool ran" is only half the audit story;
+the other half is "which agent asked". Attach an identity three ways, most
+specific wins:
+
+```python
+from tbay import agent
+
+with agent("billing-agent-7"):          # per turn or per call
+    refund_customer("cust_42", 30.0)
+
+client = TbayClient(db_url, agent_id="support-bot")   # per client/process
+# or set the TBAY_AGENT_ID environment variable       # per deployment
+```
+
+The id is stored on every execution, printed by `tbay log` as
+`agent=billing-agent-7`, and shown in the dashboard (a chip on in-flight
+cards, an agent column in the table), so an approver can see which agent
+is asking before saying yes.
+
 ## Policies
 
 ```yaml
@@ -186,6 +207,33 @@ The webhook is best-effort: if the URL is unreachable or returns an error,
 tbay ignores it silently and the call still waits normally. `tbay
 approve`/`tbay reject` always work, whether or not the webhook fired, so a
 flaky webhook endpoint can never leave a call stuck.
+
+### Securing approvals (signed approvals)
+
+By default an approval is just a database row, which means anyone holding
+the database password can approve anything: storage access and approval
+authority are the same credential. For anything sensitive, split them with
+an approval secret:
+
+```python
+client = TbayClient(db_url, approval_secret="...")   # or TBAY_APPROVAL_SECRET
+```
+
+With a secret configured, approvers (`tbay approve` with
+`TBAY_APPROVAL_SECRET` set, the dashboard process, your own integration
+via `tbay.sign_approval`) attach an HMAC-SHA256 signature over the
+execution id and the decision. The executing client recomputes and
+verifies that signature BEFORE running the function; a row flipped to
+"approved" straight in the database fails verification and the call is
+rejected with a clear error instead of running. Give the secret only to
+your approval surfaces; give agents and services only database
+credentials.
+
+Be honest about the limits: someone with full database access can still
+delete rows or mark executions failed, and someone who can edit the
+executing process's code or environment is past any guardrail. Signing
+protects the *approve* decision specifically; pair it with
+least-privilege database roles for the rest.
 
 ### Approval bypass and other guardrails
 

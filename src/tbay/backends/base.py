@@ -37,6 +37,7 @@ class ExecutionRecord:
     finished_at: Optional[float]
     embedding_json: Optional[str] = None  # args embedding, present only when the policy has semantic_cache on
     reasoning: Optional[str] = None  # why the agent made this call, captured from `with tbay.reasoning(...)`
+    agent_id: Optional[str] = None  # which agent asked for this call (with tbay.agent(...) / TBAY_AGENT_ID)
 
 
 @dataclass
@@ -93,6 +94,7 @@ class StorageBackend:
         max_concurrent: Optional[int] = None,
         embedding_json: Optional[str] = None,
         reasoning: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ) -> AcquireResult:
         """Try to become the owner of this (tool_name, idempotency_key, tenant).
         If someone already owns it, report back what the caller should do instead.
@@ -119,7 +121,19 @@ class StorageBackend:
     def get_approval_status(self, execution_id: str) -> Optional[str]:
         raise NotImplementedError
 
-    def resolve_approval(self, execution_id: str, approved: bool, resolver: str = "") -> None:
+    def resolve_approval(
+        self, execution_id: str, approved: bool, resolver: str = "", signature: Optional[str] = None
+    ) -> None:
+        """Record a human decision. `signature` is the HMAC from
+        tbay.security.sign_approval; when the executing client is configured
+        with an approval secret, it verifies this before running (see
+        src/tbay/security.py for the whole trust model)."""
+        raise NotImplementedError
+
+    def get_approval(self, execution_id: str) -> Optional[dict]:
+        """The full approval row (status/resolver/signature/timestamps) or
+        None. get_approval_status stays for cheap polling; this exists so the
+        client can verify the signature on the final decision."""
         raise NotImplementedError
 
     def list_executions(
