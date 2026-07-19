@@ -4,16 +4,16 @@ import time
 from typing import List, Optional
 
 from .base import (
-    AcquireResult,
-    ExecutionRecord,
-    FAILED,
-    RUNNING,
-    StorageBackend,
-    SUCCEEDED,
-    WAITING_APPROVAL,
     APPROVAL_APPROVED,
     APPROVAL_PENDING,
     APPROVAL_REJECTED,
+    FAILED,
+    RUNNING,
+    SUCCEEDED,
+    WAITING_APPROVAL,
+    AcquireResult,
+    ExecutionRecord,
+    StorageBackend,
 )
 
 SCHEMA = """
@@ -54,8 +54,14 @@ ALTER TABLE executions ADD COLUMN IF NOT EXISTS embedding_json TEXT;
 ALTER TABLE executions ADD COLUMN IF NOT EXISTS reasoning TEXT;
 ALTER TABLE executions ADD COLUMN IF NOT EXISTS agent_id TEXT;
 ALTER TABLE executions ADD COLUMN IF NOT EXISTS agent_meta TEXT;
+ALTER TABLE executions ADD COLUMN IF NOT EXISTS budget_value DOUBLE PRECISION;
 ALTER TABLE approvals ADD COLUMN IF NOT EXISTS signature TEXT;
 ALTER TABLE approvals ADD COLUMN IF NOT EXISTS note TEXT;
+CREATE TABLE IF NOT EXISTS controls (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at DOUBLE PRECISION NOT NULL
+);
 """
 
 
@@ -116,6 +122,7 @@ class PostgresBackend(StorageBackend):
             reasoning=row["reasoning"],
             agent_id=row["agent_id"],
             agent_meta=row["agent_meta"],
+            budget_value=row.get("budget_value"),
         )
 
     def _fetch_by_key(self, cur, tool_name, idempotency_key, tenant):
@@ -142,6 +149,8 @@ class PostgresBackend(StorageBackend):
         reasoning=None,
         agent_id=None,
         agent_meta=None,
+        budget_value=None,
+        lease_timeout=None,
     ) -> AcquireResult:
         conn = self._connect()
         try:
@@ -170,8 +179,8 @@ class PostgresBackend(StorageBackend):
                     """
                     INSERT INTO executions
                         (id, tool_name, idempotency_key, tenant, status, args_hash, args_json, policy_name,
-                         created_at, embedding_json, reasoning, agent_id, agent_meta)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         created_at, embedding_json, reasoning, agent_id, agent_meta, budget_value)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (tool_name, idempotency_key, tenant) DO NOTHING
                     """,
                     (
@@ -188,6 +197,7 @@ class PostgresBackend(StorageBackend):
                         reasoning,
                         agent_id,
                         agent_meta,
+                        budget_value,
                     ),
                 )
                 if cur.rowcount == 1:
@@ -240,7 +250,19 @@ class PostgresBackend(StorageBackend):
                     conn.commit()
                     return AcquireResult(record=record, follow_approval=True)
 
-                # RUNNING: someone else holds the lease right now.
+                # RUNNING: someone else holds the lease right now. If the row
+                # is old enough that its owner is presumed crashed
+                # (lease_timeout), try to reclaim it; the created_at guard
+                # makes this a CAS, so exactly one contender wins.
+                if lease_timeout is not None and record.created_at + lease_timeout <= time.time():
+                    cur.execute(
+                        "UPDATE executions SET created_at=%s, result_json=NULL, error=NULL, finished_at=NULL "
+                        "WHERE id=%s AND status=%s AND created_at=%s",
+                        (time.time(), record.id, RUNNING, record.created_at),
+                    )
+                    if cur.rowcount == 1:
+                        conn.commit()
+                        return AcquireResult(record=record, owner=True)
                 conn.commit()
                 return AcquireResult(record=record, follow_running=True)
         finally:
@@ -367,6 +389,61 @@ class PostgresBackend(StorageBackend):
                     (tool_name, tenant, since),
                 )
                 return cur.fetchone()["n"]
+        finally:
+            conn.close()
+
+    def sum_budget_since(self, tool_name: str, tenant: str, since: float) -> float:
+        conn = self._connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COALESCE(SUM(budget_value), 0) AS total FROM executions "
+                    "WHERE tool_name=%s AND tenant=%s AND created_at>=%s AND budget_value IS NOT NULL",
+                    (tool_name, tenant, since),
+                )
+                return float(cur.fetchone()["total"])
+        finally:
+            conn.close()
+
+    def set_control(self, key: str, value: str) -> None:
+        conn = self._connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO controls (key, value, updated_at) VALUES (%s, %s, %s) "
+                    "ON CONFLICT (key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                    (key, value, time.time()),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_control(self, key: str):
+        conn = self._connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT value FROM controls WHERE key=%s", (key,))
+                row = cur.fetchone()
+            return row["value"] if row else None
+        finally:
+            conn.close()
+
+    def delete_control(self, key: str) -> None:
+        conn = self._connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM controls WHERE key=%s", (key,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def list_controls(self):
+        conn = self._connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT key, value FROM controls")
+                rows = cur.fetchall()
+            return {row["key"]: row["value"] for row in rows}
         finally:
             conn.close()
 

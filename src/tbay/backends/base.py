@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from ..exceptions import ApprovalTimeout, ExecutionTimeout
 
@@ -39,6 +39,7 @@ class ExecutionRecord:
     reasoning: Optional[str] = None  # why the agent made this call, captured from `with tbay.reasoning(...)`
     agent_id: Optional[str] = None  # which agent asked for this call (with tbay.agent(...) / TBAY_AGENT_ID)
     agent_meta: Optional[str] = None  # JSON metadata about that agent (model, team, version, ...)
+    budget_value: Optional[float] = None  # this call's metered amount, when the policy has a budget cap
 
 
 @dataclass
@@ -97,6 +98,8 @@ class StorageBackend:
         reasoning: Optional[str] = None,
         agent_id: Optional[str] = None,
         agent_meta: Optional[str] = None,
+        budget_value: Optional[float] = None,
+        lease_timeout: Optional[float] = None,
     ) -> AcquireResult:
         """Try to become the owner of this (tool_name, idempotency_key, tenant).
         If someone already owns it, report back what the caller should do instead.
@@ -105,6 +108,12 @@ class StorageBackend:
         happen in the same transaction, so this is atomic, not a separate
         check-then-act: two simultaneous new callers can't both slip through
         past the cap the way a check performed before this call would allow.
+
+        If lease_timeout is set and the existing owner's RUNNING row is older
+        than that many seconds, the owner is presumed crashed and the row is
+        reclaimed with a compare-and-swap keyed on the row's observed
+        created_at, so exactly one contender wins the reclaim and everyone
+        else keeps following.
         """
         raise NotImplementedError
 
@@ -152,6 +161,30 @@ class StorageBackend:
     def count_since(self, tool_name: str, tenant: str, since: float) -> int:
         """How many calls to this tool (for this tenant) were created at or
         after `since` (a time.time() timestamp). Backs the rate_limit guardrail."""
+        raise NotImplementedError
+
+    def sum_budget_since(self, tool_name: str, tenant: str, since: float) -> float:
+        """The total of budget_value across every execution of this tool (for
+        this tenant) created at or after `since`. Backs the budget guardrail.
+        Counts every recorded execution regardless of status: a call that
+        failed mid-flight may still have had its side effect, so the
+        conservative reading (never under-count spend) is the safe one."""
+        raise NotImplementedError
+
+    # -- controls: small named switches, shared by every process on this
+    # database. Today they back the kill switch (`pause:*` / `pause:tool:X`);
+    # the namespace is generic so future controls don't need schema changes.
+
+    def set_control(self, key: str, value: str) -> None:
+        raise NotImplementedError
+
+    def get_control(self, key: str) -> Optional[str]:
+        raise NotImplementedError
+
+    def delete_control(self, key: str) -> None:
+        raise NotImplementedError
+
+    def list_controls(self) -> Dict[str, str]:
         raise NotImplementedError
 
     def list_semantic_candidates(self, tool_name: str, tenant: str, limit: int = 200) -> List[ExecutionRecord]:

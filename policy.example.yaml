@@ -2,6 +2,9 @@
 # it to TbayClient(db_url, policy_file="policy.yaml"). Any policy you don't
 # override here still falls back to the built-in defaults in
 # src/tbay/policy.py, so most projects only need to override a field or two.
+#
+# Misspelled keys are rejected at load time (a silently ignored safety
+# setting would be worse than an error), so typos surface immediately.
 
 policies:
   # Safe to call repeatedly and safe to serve a slightly stale answer for.
@@ -11,6 +14,9 @@ policies:
     singleflight: true          # 20 identical concurrent calls become 1 real call, 19 followers
     max_retries: 2              # a *later* call gets to retry a call that failed
     retry_backoff: 1s            # ...but only after waiting this long since the failure
+    lease_timeout: 10m           # a RUNNING call whose process crashed is reclaimed after this
+                                 # (safe here: re-running a read is harmless; leave it off for
+                                 # tools where a rare double-run would be worse than a hang)
 
   # Like readonly, but a stored answer also satisfies calls whose arguments
   # are merely SIMILAR (embedding cosine similarity), not byte-identical:
@@ -41,13 +47,25 @@ policies:
 
     # Optional: fire an HTTP POST when a call starts waiting for approval, so
     # a human finds out without having to poll `tbay log` themselves. The
-    # POST body is {"execution_id": "...", "tool_name": "..."}, so look the
-    # execution up with `tbay log --tool <tool_name>` to see its (possibly
-    # redacted) arguments before deciding. This is best-effort: if the
-    # webhook URL is unreachable or returns an error, tbay ignores it and
-    # the call still waits normally. `tbay approve`/`tbay reject` always
-    # work regardless of whether the webhook fired.
+    # JSON body carries the execution id, tool, tenant, policy, (redacted)
+    # arguments, the requesting agent, and its reasoning; with an approval
+    # secret configured it is HMAC-signed (X-Tbay-Signature; verify with
+    # tbay.verify_webhook). Only http(s) URLs ever fire. Best-effort: if the
+    # webhook URL is unreachable or errors, tbay logs and moves on, and
+    # `tbay approve`/`tbay reject` work regardless.
     approval_webhook: null        # e.g. "https://hooks.slack.com/services/XXX"
+
+    # Optional: a spend budget. Rate limits count calls; budgets meter
+    # magnitude. Here the SUM of `amount` across every call in a rolling day
+    # may not pass 1000, however it is sliced, across every process sharing
+    # the database. The first call past the cap raises BudgetExceeded and
+    # never runs; a call whose `amount` is missing or non-numeric is refused
+    # too, since an unmeasurable call can't be counted. All three keys are
+    # required together.
+    budget:
+      arg: amount
+      max: 1000
+      per: 1d
 
     # Optional: skip approval automatically for small/low-risk calls, and
     # only pause the ones above a threshold. Here, refunds of $50 or less go
@@ -56,10 +74,15 @@ policies:
     approval_bypass_arg: amount
     approval_bypass_max: 50
 
-    # Optional: never store these argument names in the audit log. Useful
-    # when a destructive tool's arguments include something sensitive that
-    # an approver doesn't need to see verbatim.
+    # Optional: never store these argument values in the audit log (or send
+    # them through webhooks). Bare names match at any depth, including inside
+    # lists; dotted paths ("card.number") match one exact path. Useful when a
+    # destructive tool's arguments include something sensitive an approver
+    # doesn't need to see verbatim.
     redact_args: [card_number, ssn]
+    # redact_patterns: ["(?i)^internal_"]  # regexes against argument key names
+    # redact_auto: true                     # mask well-known secret-ish names
+                                            # (password, token, api_key, ...)
 
   # For tool calls that should run fresh every single time, even with
   # identical arguments: an LLM call used to make a decision, "roll a die",

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import functools
 import inspect
-from typing import Callable, Optional
+from typing import Callable, Dict, Iterable, List, Optional, Union
 
 from .client import TbayClient
 
@@ -51,3 +51,33 @@ def guarded(
         return sync_wrapper
 
     return decorator
+
+
+def guard_tools(
+    client: TbayClient,
+    tools: Union[Iterable[Callable], Dict[str, Callable]],
+    *,
+    policy: str = "mutating",
+    tenant: str = "",
+    key_fn: Optional[Callable] = None,
+) -> Union[List[Callable], Dict[str, Callable]]:
+    """Wrap a whole collection of tool functions under one policy at once.
+
+    Handy when a framework hands you a list of tools (or you keep them in a
+    registry dict) and they all share a risk tier:
+
+        safe_tools = guard_tools(client, [search, fetch_page], policy="readonly")
+        actions = guard_tools(client, {"refund": refund, "cancel": cancel}, policy="destructive")
+
+    A dict input returns a dict wrapped under the same keys, and each key
+    becomes that tool's recorded tool_name; an iterable input returns a list
+    in the same order, using each function's own name. Tools that need
+    *different* policies should keep using @guarded individually -- one
+    policy for everything is exactly the kind of blunt setting this helper
+    is for."""
+    if isinstance(tools, dict):
+        return {
+            name: guarded(client, policy=policy, tenant=tenant, key_fn=key_fn, tool_name=name)(fn)
+            for name, fn in tools.items()
+        }
+    return [guarded(client, policy=policy, tenant=tenant, key_fn=key_fn)(fn) for fn in tools]

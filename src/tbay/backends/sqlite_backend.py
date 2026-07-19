@@ -6,16 +6,16 @@ import time
 from typing import List, Optional
 
 from .base import (
-    AcquireResult,
-    ExecutionRecord,
-    FAILED,
-    RUNNING,
-    StorageBackend,
-    SUCCEEDED,
-    WAITING_APPROVAL,
     APPROVAL_APPROVED,
     APPROVAL_PENDING,
     APPROVAL_REJECTED,
+    FAILED,
+    RUNNING,
+    SUCCEEDED,
+    WAITING_APPROVAL,
+    AcquireResult,
+    ExecutionRecord,
+    StorageBackend,
 )
 
 SCHEMA = """
@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS executions (
     reasoning TEXT,
     agent_id TEXT,
     agent_meta TEXT,
+    budget_value REAL,
     UNIQUE (tool_name, idempotency_key, tenant)
 );
 CREATE TABLE IF NOT EXISTS approvals (
@@ -48,6 +49,11 @@ CREATE TABLE IF NOT EXISTS approvals (
     resolver TEXT,
     signature TEXT,
     note TEXT
+);
+CREATE TABLE IF NOT EXISTS controls (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at REAL NOT NULL
 );
 """
 
@@ -98,7 +104,13 @@ class SQLiteBackend(StorageBackend):
             conn.executescript(SCHEMA)
             # Databases created by tbay < 0.2.0 predate these columns; add
             # them in place so an upgrade never requires dropping the table.
-            for column in ("embedding_json TEXT", "reasoning TEXT", "agent_id TEXT", "agent_meta TEXT"):
+            for column in (
+                "embedding_json TEXT",
+                "reasoning TEXT",
+                "agent_id TEXT",
+                "agent_meta TEXT",
+                "budget_value REAL",
+            ):
                 try:
                     conn.execute(f"ALTER TABLE executions ADD COLUMN {column}")
                 except sqlite3.OperationalError:
@@ -133,6 +145,7 @@ class SQLiteBackend(StorageBackend):
             reasoning=row["reasoning"],
             agent_id=row["agent_id"],
             agent_meta=row["agent_meta"],
+            budget_value=row["budget_value"],
         )
 
     def _fetch_by_key(self, conn, tool_name, idempotency_key, tenant) -> Optional[sqlite3.Row]:
@@ -158,6 +171,8 @@ class SQLiteBackend(StorageBackend):
         reasoning=None,
         agent_id=None,
         agent_meta=None,
+        budget_value=None,
+        lease_timeout=None,
     ) -> AcquireResult:
         conn = self._connect()
         try:
@@ -184,8 +199,8 @@ class SQLiteBackend(StorageBackend):
                 """
                 INSERT INTO executions
                     (id, tool_name, idempotency_key, tenant, status, args_hash, args_json, policy_name,
-                     created_at, embedding_json, reasoning, agent_id, agent_meta)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     created_at, embedding_json, reasoning, agent_id, agent_meta, budget_value)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(tool_name, idempotency_key, tenant) DO NOTHING
                 """,
                 (
@@ -202,6 +217,7 @@ class SQLiteBackend(StorageBackend):
                     reasoning,
                     agent_id,
                     agent_meta,
+                    budget_value,
                 ),
             )
             if cur.rowcount == 1:
@@ -255,7 +271,19 @@ class SQLiteBackend(StorageBackend):
                 conn.commit()
                 return AcquireResult(record=record, follow_approval=True)
 
-            # RUNNING: someone else holds the lease right now.
+            # RUNNING: someone else holds the lease right now. If the row is
+            # old enough that its owner is presumed crashed (lease_timeout),
+            # try to reclaim it; the created_at guard makes this a CAS, so
+            # exactly one contender wins and the rest keep following.
+            if lease_timeout is not None and record.created_at + lease_timeout <= time.time():
+                cur2 = conn.execute(
+                    "UPDATE executions SET created_at=?, result_json=NULL, error=NULL, finished_at=NULL "
+                    "WHERE id=? AND status=? AND created_at=?",
+                    (time.time(), record.id, RUNNING, record.created_at),
+                )
+                if cur2.rowcount == 1:
+                    conn.commit()
+                    return AcquireResult(record=record, owner=True)
             conn.commit()
             return AcquireResult(record=record, follow_running=True)
         finally:
@@ -370,6 +398,54 @@ class SQLiteBackend(StorageBackend):
                 (tool_name, tenant, since),
             ).fetchone()
             return row["n"]
+        finally:
+            conn.close()
+
+    def sum_budget_since(self, tool_name: str, tenant: str, since: float) -> float:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(budget_value), 0) AS total FROM executions "
+                "WHERE tool_name=? AND tenant=? AND created_at>=? AND budget_value IS NOT NULL",
+                (tool_name, tenant, since),
+            ).fetchone()
+            return float(row["total"])
+        finally:
+            conn.close()
+
+    def set_control(self, key: str, value: str) -> None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                "INSERT INTO controls (key, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                (key, value, time.time()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_control(self, key: str):
+        conn = self._connect()
+        try:
+            row = conn.execute("SELECT value FROM controls WHERE key=?", (key,)).fetchone()
+            return row["value"] if row else None
+        finally:
+            conn.close()
+
+    def delete_control(self, key: str) -> None:
+        conn = self._connect()
+        try:
+            conn.execute("DELETE FROM controls WHERE key=?", (key,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def list_controls(self):
+        conn = self._connect()
+        try:
+            rows = conn.execute("SELECT key, value FROM controls").fetchall()
+            return {row["key"]: row["value"] for row in rows}
         finally:
             conn.close()
 

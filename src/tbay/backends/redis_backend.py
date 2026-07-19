@@ -4,16 +4,16 @@ import time
 from typing import List, Optional
 
 from .base import (
-    AcquireResult,
-    ExecutionRecord,
-    FAILED,
-    RUNNING,
-    StorageBackend,
-    SUCCEEDED,
-    WAITING_APPROVAL,
     APPROVAL_APPROVED,
     APPROVAL_PENDING,
     APPROVAL_REJECTED,
+    FAILED,
+    RUNNING,
+    SUCCEEDED,
+    WAITING_APPROVAL,
+    AcquireResult,
+    ExecutionRecord,
+    StorageBackend,
 )
 
 
@@ -36,11 +36,13 @@ def _import_redis():
 #   KEYS[3]  calls zset    created_at per execution, backs count_since()
 #   KEYS[4]  log zset      every execution ever, newest first, backs list_executions()
 #   KEYS[5]  record hash   the ExecutionRecord fields for the new execution
+#   KEYS[6]  budget zset   created_at -> "execution_id:value", backs sum_budget_since()
 #
 #   ARGV[1]  max_concurrent (0 disables the check)
 #   ARGV[2]  execution_id
 #   ARGV[3]  created_at
-#   ARGV[4+] field/value pairs for the record hash
+#   ARGV[4]  budget value for this call, or '' when the policy has no budget
+#   ARGV[5+] field/value pairs for the record hash
 #
 # Returns {'EXISTS', id} if someone already holds the key, {'WAIT'} if
 # max_concurrent is full, or {'OWNER'} if we claimed it and wrote the record.
@@ -57,7 +59,10 @@ redis.call('SET', KEYS[1], ARGV[2])
 redis.call('SADD', KEYS[2], ARGV[2])
 redis.call('ZADD', KEYS[3], tonumber(ARGV[3]), ARGV[2])
 redis.call('ZADD', KEYS[4], tonumber(ARGV[3]), ARGV[2])
-for i = 4, #ARGV, 2 do
+if ARGV[4] ~= '' then
+    redis.call('ZADD', KEYS[6], tonumber(ARGV[3]), ARGV[2] .. ':' .. ARGV[4])
+end
+for i = 5, #ARGV, 2 do
     redis.call('HSET', KEYS[5], ARGV[i], ARGV[i + 1])
 end
 return {'OWNER'}
@@ -86,6 +91,29 @@ redis.call('ZADD', KEYS[3], tonumber(ARGV[2]), ARGV[4])
 return 1
 """
 
+# Reclaim a RUNNING record whose owner is presumed crashed. The created_at
+# equality check is the compare-and-swap: every contender saw the same stale
+# created_at, exactly one of them updates it, and the losers' calls return 0.
+#
+#   KEYS[1] record hash    KEYS[2] running set    KEYS[3] calls zset
+#   ARGV[1] the stale created_at we observed
+#   ARGV[2] new created_at
+#   ARGV[3] execution_id
+_RECLAIM_STALE_LUA = """
+if redis.call('HGET', KEYS[1], 'status') ~= 'RUNNING' then
+    return 0
+end
+local created = tonumber(redis.call('HGET', KEYS[1], 'created_at'))
+if created == nil or created ~= tonumber(ARGV[1]) then
+    return 0
+end
+redis.call('HSET', KEYS[1], 'created_at', ARGV[2])
+redis.call('HDEL', KEYS[1], 'result_json', 'error', 'finished_at', 'cache_expires_at')
+redis.call('SADD', KEYS[2], ARGV[3])
+redis.call('ZADD', KEYS[3], tonumber(ARGV[2]), ARGV[3])
+return 1
+"""
+
 _FLOAT_FIELDS = ("cache_expires_at", "created_at", "finished_at")
 
 
@@ -106,6 +134,7 @@ class RedisBackend(StorageBackend):
         self._p = prefix
         self._acquire_script = self._r.register_script(_ACQUIRE_LUA)
         self._reclaim_script = self._r.register_script(_RECLAIM_LUA)
+        self._reclaim_stale_script = self._r.register_script(_RECLAIM_STALE_LUA)
 
     # -- key layout --
 
@@ -117,6 +146,12 @@ class RedisBackend(StorageBackend):
 
     def _calls_key(self, tool_name, tenant) -> str:
         return f"{self._p}calls:{tool_name}:{tenant}"
+
+    def _budget_key(self, tool_name, tenant) -> str:
+        return f"{self._p}budget:{tool_name}:{tenant}"
+
+    def _controls_key(self) -> str:
+        return f"{self._p}controls"
 
     def _log_key(self) -> str:
         return f"{self._p}log"
@@ -160,6 +195,7 @@ class RedisBackend(StorageBackend):
             reasoning=data.get("reasoning"),
             agent_id=data.get("agent_id"),
             agent_meta=data.get("agent_meta"),
+            budget_value=float(data["budget_value"]) if data.get("budget_value") else None,
         )
 
     def init_schema(self) -> None:
@@ -184,6 +220,8 @@ class RedisBackend(StorageBackend):
         reasoning=None,
         agent_id=None,
         agent_meta=None,
+        budget_value=None,
+        lease_timeout=None,
     ) -> AcquireResult:
         now = time.time()
         record_fields = self._record_to_fields(
@@ -202,6 +240,7 @@ class RedisBackend(StorageBackend):
                 "reasoning": reasoning,
                 "agent_id": agent_id,
                 "agent_meta": agent_meta,
+                "budget_value": budget_value,
             }
         )
         outcome = self._acquire_script(
@@ -211,8 +250,10 @@ class RedisBackend(StorageBackend):
                 self._calls_key(tool_name, tenant),
                 self._log_key(),
                 self._exec_key(execution_id),
+                self._budget_key(tool_name, tenant),
             ],
-            args=[max_concurrent or 0, execution_id, now] + record_fields,
+            args=[max_concurrent or 0, execution_id, now, "" if budget_value is None else repr(budget_value)]
+            + record_fields,
         )
 
         if outcome[0] == "WAIT":
@@ -248,6 +289,20 @@ class RedisBackend(StorageBackend):
         if record.status == WAITING_APPROVAL:
             return AcquireResult(record=record, follow_approval=True)
 
+        # RUNNING: someone else holds the lease. If the record is old enough
+        # that its owner is presumed crashed (lease_timeout), try to reclaim
+        # it; the created_at CAS in the script makes sure only one wins.
+        if lease_timeout is not None and record.created_at + lease_timeout <= time.time():
+            won = self._reclaim_stale_script(
+                keys=[
+                    self._exec_key(record.id),
+                    self._running_key(record.tool_name, record.tenant),
+                    self._calls_key(record.tool_name, record.tenant),
+                ],
+                args=[repr(record.created_at), time.time(), record.id],
+            )
+            if won == 1:
+                return AcquireResult(record=record, owner=True)
         return AcquireResult(record=record, follow_running=True)
 
     def _reclaim(self, record: ExecutionRecord, *, expected: str, bump_retry: bool) -> bool:
@@ -345,6 +400,26 @@ class RedisBackend(StorageBackend):
     def count_since(self, tool_name: str, tenant: str, since: float) -> int:
         return self._r.zcount(self._calls_key(tool_name, tenant), since, "+inf")
 
+    def sum_budget_since(self, tool_name: str, tenant: str, since: float) -> float:
+        # Members are "execution_id:value" scored by created_at; execution
+        # ids are UUIDs (no colons), so splitting on the first ':' is safe.
+        total = 0.0
+        for member in self._r.zrangebyscore(self._budget_key(tool_name, tenant), since, "+inf"):
+            total += float(member.split(":", 1)[1])
+        return total
+
+    def set_control(self, key: str, value: str) -> None:
+        self._r.hset(self._controls_key(), key, value)
+
+    def get_control(self, key: str):
+        return self._r.hget(self._controls_key(), key)
+
+    def delete_control(self, key: str) -> None:
+        self._r.hdel(self._controls_key(), key)
+
+    def list_controls(self):
+        return self._r.hgetall(self._controls_key())
+
     def list_semantic_candidates(self, tool_name: str, tenant: str, limit: int = 200) -> List[ExecutionRecord]:
         now = time.time()
         results: List[ExecutionRecord] = []
@@ -365,6 +440,8 @@ class RedisBackend(StorageBackend):
         removed = self._r.zcard(self._log_key())
         batch = []
         for key in self._r.scan_iter(match=f"{self._p}*", count=500):
+            if key == self._controls_key():
+                continue  # controls (e.g. an active pause) survive a clear, same as the SQL backends
             batch.append(key)
             if len(batch) >= 500:
                 self._r.delete(*batch)

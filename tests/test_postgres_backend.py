@@ -97,7 +97,6 @@ def test_agent_identity_and_metadata_over_postgres(pg_client):
 
 
 def test_rejection_reason_over_postgres(pg_client):
-    import pytest as _pytest
 
     from tbay import ApprovalRejected
 

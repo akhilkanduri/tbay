@@ -28,20 +28,29 @@ itself is persistent (AOF/RDB).
 
 ## Schema
 
-Two tables (or their Redis-hash equivalents):
+Three tables (or their Redis-hash equivalents):
 
 - `executions`: one row per tool call. Identity (`tool_name`,
   `idempotency_key`, `tenant`, unique together), state (`status`,
   `result_json`, `error`, `retry_count`, timestamps), audit fields
-  (`args_json`, `reasoning`, `agent_id`, `agent_meta`), and
-  `embedding_json` for semantic caching.
+  (`args_json`, `reasoning`, `agent_id`, `agent_meta`),
+  `embedding_json` for semantic caching, and `budget_value` for
+  [budget caps](controls.md#budgets-capping-magnitude-not-just-call-counts).
 - `approvals`: one row per approval request: `status`
   (pending/approved/rejected), `resolver`, `signature` (see
   [signed approvals](approvals.md#signed-approvals-separating-storage-access-from-approval-authority)),
   `note` (the rejection reason), timestamps.
+- `controls`: small named switches shared by every process on the
+  database; the [kill switch](controls.md#the-kill-switch-tbay-pause)
+  lives here. Controls survive `tbay clear` on every backend.
 
 Databases created by older tbay versions are migrated in place at client
 startup (columns are added, nothing is dropped); no manual steps.
+
+Stale-lease reclaim (a `RUNNING` row abandoned by a crashed process being
+taken over once `lease_timeout` passes) is a compare-and-swap on the row's
+observed `created_at`, implemented with the same mechanism as the claim
+itself on each backend, so exactly one contender ever wins it.
 
 ## Multi-tenancy
 

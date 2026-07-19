@@ -47,3 +47,21 @@ def verify_approval(secret: str, execution_id: str, approved: bool, signature: O
         return False
     expected = sign_approval(secret, execution_id, approved)
     return hmac.compare_digest(expected, signature)
+
+
+def sign_webhook(secret: str, body: bytes) -> str:
+    """The value tbay puts in the X-Tbay-Signature header of an approval
+    webhook: 'sha256=' + HMAC-SHA256 over the exact request body, keyed by
+    the approval secret. Receivers should verify with verify_webhook before
+    trusting the payload; anyone who can reach the webhook URL can POST to
+    it, but only a holder of the secret can sign."""
+    digest = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return f"sha256={digest}"
+
+
+def verify_webhook(secret: str, body: bytes, header_value: Optional[str]) -> bool:
+    """Constant-time check of an incoming webhook's X-Tbay-Signature header
+    against the raw request body. A missing header never verifies."""
+    if not header_value:
+        return False
+    return hmac.compare_digest(sign_webhook(secret, body), header_value)
