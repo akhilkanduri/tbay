@@ -1,13 +1,14 @@
 # tbay
 
-[![installs](https://static.pepy.tech/personalized-badge/tbay?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=yellow&left_text=Downloads)](https://pepy.tech/projects/tbay) ![GitHub stars](https://img.shields.io/github/stars/akhilkanduri/tbay)
+[![installs](https://static.pepy.tech/personalized-badge/saeligram?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=yellow&left_text=Downloads)](https://pepy.tech/projects/saeligram) ![GitHub stars](https://img.shields.io/github/stars/akhilkanduri/tbay)
 
 
 Execution safety for AI agent tool calls: idempotency, TTL and semantic
-caching, singleflight deduplication, risk-tiered policy, human approval
-gating (optionally cryptographically signed), and a reasoning- and
-agent-linked audit log. A library you install, not a service you depend
-on.
+caching, singleflight deduplication, risk-tiered policy, spend budgets, a
+cross-process kill switch, human approval gating (optionally
+cryptographically signed), crash recovery, lifecycle events with optional
+OpenTelemetry spans, and a reasoning- and agent-linked audit log. A
+library you install, not a service you depend on.
 
 ```python
 from tbay import TbayClient, guarded
@@ -28,7 +29,24 @@ def refund_customer(customer_id: str, amount: float) -> dict:
 `refund_customer` never double-runs and pauses for a human before
 executing. `@guarded` only wraps a plain callable, so it drops in under
 LangChain's `@tool`, the OpenAI Agents SDK's `@function_tool`, CrewAI
-tools, or bare functions.
+tools, an MCP server's tool handlers, or bare functions
+([recipes](docs/integrations.md)).
+
+When something goes wrong anyway, you have an emergency brake and a
+ceiling on the damage:
+
+```yaml
+# policy.yaml: refunds may total at most $1000/day, across every process
+policies:
+  destructive:
+    approval_required: true
+    budget: {arg: amount, max: 1000, per: 1d}
+```
+
+```
+$ tbay pause --reason "agent runaway"    # stop every guarded call, everywhere, now
+$ tbay resume
+```
 
 Agent frameworks solve planning and orchestration; none of them solve
 *execution safety*. Once a tool is selected, nothing stops it from being
@@ -55,8 +73,10 @@ pip install tbay[redis]        # + Redis
 | [Quickstart](docs/quickstart.md) | First guarded tool, the dev container, running the demo |
 | [Policies](docs/policies.md) | The four risk tiers, the YAML file, every policy field |
 | [Caching and idempotency](docs/caching.md) | Idempotency keys, TTL, singleflight, semantic caching, volatile calls, rate limits |
-| [Approvals](docs/approvals.md) | Pause/approve flow, webhooks, bypass thresholds, signed approvals, rejection reasons |
-| [Observability](docs/observability.md) | Audit log, reasoning traces, agent identity, the CLI, the toolbay monitor dashboard |
+| [Approvals](docs/approvals.md) | Pause/approve flow, signed webhooks, bypass thresholds, signed approvals, rejection reasons |
+| [Runtime controls](docs/controls.md) | The kill switch (`tbay pause`), spend budgets, stale-lease crash recovery |
+| [Observability](docs/observability.md) | Audit log, lifecycle events, OpenTelemetry, reasoning traces, agent identity, the CLI, the dashboard |
+| [Integrations](docs/integrations.md) | LangChain, OpenAI Agents SDK, CrewAI, MCP servers, `guard_tools` |
 | [Storage backends](docs/backends.md) | SQLite, Postgres, Redis: guarantees, schema, migrations, clearing data |
 | [API reference](docs/api.md) | Every public function and class, with examples |
 

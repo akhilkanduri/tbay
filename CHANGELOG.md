@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.3.0
+
+Safety, observability, and operability for agent fleets. Fully backward
+compatible: existing databases are migrated in place at client startup,
+and no existing API changed shape.
+
+- **Kill switch**: `tbay pause [--tool NAME] [--reason ...]` /
+  `tbay resume` (or `client.pause()` / `client.resume()`) stops guarded
+  calls immediately, across every process and host sharing the database.
+  Blocked calls raise the new `ToolPaused` with the pause reason. Pauses
+  survive `tbay clear`.
+- **Spend budgets**: `budget: {arg: amount, max: 1000, per: 1d}` on a
+  policy caps the SUM of a numeric argument over a rolling window, per
+  tool per tenant, atomically across processes; rate limits count calls,
+  budgets meter magnitude. Past the cap (or when the metered argument is
+  missing/non-numeric) the new `BudgetExceeded` is raised and the tool
+  never runs.
+- **Lifecycle events**: `client.on(...)` subscribes handlers (optionally
+  filtered by type) to structured events for every decision tbay makes:
+  call started/succeeded/failed, cache and semantic-cache hits,
+  singleflight coalescing, approval requested/approved/rejected, rate/
+  budget/concurrency refusals, kill-switch blocks. Handler exceptions are
+  isolated and can never break a guarded call.
+- **OpenTelemetry bridge** (`pip install tbay[otel]`):
+  `tbay.otel.instrument(client)` turns every guarded call into a span
+  (nesting under your agent framework's traces) with policy, tenant,
+  agent, and outcome attributes; refusals and cache hits become short
+  spans of their own, and failures get error status.
+- **Stale-lease crash recovery**: a policy-level `lease_timeout` lets the
+  next caller atomically reclaim a RUNNING execution abandoned by a
+  crashed process (created_at CAS; exactly one contender wins, on every
+  backend). On by default only for `readonly` (10m), where a re-run is
+  harmless.
+- **Deep redaction**: `redact_args` now masks at any depth (including
+  inside lists) and supports dotted paths ("card.number"); new
+  `redact_patterns` (regexes against key names) and `redact_auto` (mask
+  well-known secret-ish names like password/token/api_key). Redaction now
+  also applies to webhook payloads. Exported as `tbay.redact_structure`.
+- **Hardened webhooks**: approval webhooks now carry the full decision
+  context (tool, tenant, policy, redacted args, agent, reasoning), fire
+  only for http(s) URLs (a policy file can no longer point tbay at
+  file:// or similar), and are HMAC-signed (X-Tbay-Signature) when an
+  approval secret is configured; `verify_webhook` checks them
+  receiver-side.
+- **Execution timeout fix**: the sync `execution_timeout` path no longer
+  blocks until the hung call eventually finishes (the ThreadPoolExecutor
+  context manager joined the worker thread); it now returns as soon as
+  the timeout fires.
+- **Policy typo detection**: unknown keys in a policy file are rejected
+  at load time with the list of valid keys, instead of being silently
+  ignored.
+- **CLI**: new `pending` (everything awaiting a human, oldest first, with
+  args/agent/reasoning), `show <id>` (full record + approval row),
+  `stats` (counts by status/tool + active pauses), `export` (audit log as
+  JSON Lines), `pause`/`resume`, and `policies` (every effective policy
+  and its key settings).
+- **`guard_tools()`**: wrap a list or dict of tool functions under one
+  policy in a single call; new docs/integrations.md with LangChain,
+  OpenAI Agents SDK, CrewAI, and MCP-server recipes.
+- **Typing and tooling**: ships `py.typed` (PEP 561), CI now tests 3.9,
+  3.11, and 3.13 and runs ruff, and the package declares explicit
+  3.9-3.13 classifiers.
+
 ## 0.2.0
 
 - Redis storage backend (`pip install tbay[redis]`, `redis://` URLs):

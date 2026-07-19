@@ -61,6 +61,15 @@ policies:
     max_concurrent: 3
     concurrency_wait_timeout: 30s
     execution_timeout: 10s
+
+  refunds:                           # cap total spend, not just call counts
+    approval_required: true
+    approval_bypass_arg: amount
+    approval_bypass_max: 50
+    budget:
+      arg: amount                    # SUM of this argument...
+      max: 1000                      # ...may not pass this...
+      per: 1d                        # ...in this rolling window
 ```
 
 ```python
@@ -70,6 +79,11 @@ client = TbayClient(db_url, policy_file="policy.yaml")
 Any policy you don't mention keeps its built-in defaults. You can also
 override in code: `client.policies["readonly"].cache_ttl = 60`. See
 `policy.example.yaml` in the repo root for a fully commented example.
+
+A policy entry containing an unknown key is **rejected at load time** with
+an error listing the valid keys. A typo like `aproval_required` would
+otherwise be silently ignored, and a silently ignored safety setting is
+the worst kind of bug.
 
 ## Every policy field
 
@@ -93,7 +107,13 @@ seconds.
 | `approval_bypass_max` | none | Bypass approval when that argument is at or under this value. |
 | `rate_limit.max_calls` | none | Max calls (any args) per window. |
 | `rate_limit.per` | none | The window those calls are counted over. |
+| `budget.arg` | none | Numeric argument metered against a spend cap. See [Runtime controls](controls.md#budgets-capping-magnitude-not-just-call-counts). |
+| `budget.max` | none | Ceiling for that argument's rolling total; past it, `BudgetExceeded`. |
+| `budget.per` | none | The rolling window the total is summed over. All three `budget` keys are required together. |
 | `max_concurrent` | none | At most this many calls to the tool running at once (atomic on every backend). |
 | `concurrency_wait_timeout` | `300` | How long a caller waits for a free slot before `ConcurrencyLimitExceeded`. |
+| `lease_timeout` | none (`10m` for `readonly`) | Reclaim a RUNNING execution abandoned by a crashed process after this long. See [Runtime controls](controls.md#stale-lease-recovery-surviving-crashed-owners). |
 | `execution_timeout` | none | Best-effort per-call timeout. Python can't force-kill a thread, so a hung call may keep running after being marked FAILED. |
-| `redact_args` | `[]` | Argument names masked as `***REDACTED***` in the audit log. |
+| `redact_args` | `[]` | Argument names (any depth) or dotted paths masked as `***REDACTED***` in the audit log. |
+| `redact_patterns` | `[]` | Regexes matched against argument key names at any depth; matches are masked. |
+| `redact_auto` | `false` | Also mask well-known secret-ish key names (`password`, `token`, `api_key`, `authorization`, ...). |

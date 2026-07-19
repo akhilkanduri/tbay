@@ -4,27 +4,59 @@ import asyncio
 import hashlib
 import inspect
 import json
-import time
-import uuid
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeoutError
-from typing import Any, Callable, Dict, Optional
-
+import logging
 import os
+import time
+import urllib.parse
+import urllib.request
+import uuid
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from typing import Any, Callable, Dict, Iterable, Optional
 
-from .backends.base import AcquireResult, APPROVAL_APPROVED, FAILED, StorageBackend, SUCCEEDED
+from .backends.base import APPROVAL_APPROVED, FAILED, SUCCEEDED, AcquireResult, StorageBackend
 from .context import current_agent, current_agent_meta, current_reasoning
 from .embedders import cosine_similarity
-from .security import verify_approval
+from .events import (
+    APPROVAL_APPROVED as EV_APPROVAL_APPROVED,
+    APPROVAL_REJECTED as EV_APPROVAL_REJECTED,
+    APPROVAL_REQUESTED as EV_APPROVAL_REQUESTED,
+    BUDGET_EXCEEDED as EV_BUDGET_EXCEEDED,
+    CACHE_HIT as EV_CACHE_HIT,
+    CALL_FAILED as EV_CALL_FAILED,
+    CALL_STARTED as EV_CALL_STARTED,
+    CALL_SUCCEEDED as EV_CALL_SUCCEEDED,
+    CONCURRENCY_BLOCKED as EV_CONCURRENCY_BLOCKED,
+    KILL_SWITCH_BLOCKED as EV_KILL_SWITCH_BLOCKED,
+    RATE_LIMITED as EV_RATE_LIMITED,
+    SEMANTIC_CACHE_HIT as EV_SEMANTIC_CACHE_HIT,
+    SINGLEFLIGHT_COALESCED as EV_SINGLEFLIGHT_COALESCED,
+    Event,
+    EventBus,
+    Handler,
+)
 from .exceptions import (
     ApprovalRejected,
     ApprovalTimeout,
+    BudgetExceeded,
     ConcurrencyLimitExceeded,
     ExecutionFailed,
     ExecutionTimeout,
     RateLimitExceeded,
+    ToolPaused,
 )
 from .policy import Policy, load_policies
+from .redaction import redact_structure
+from .security import sign_webhook, verify_approval
+
+logger = logging.getLogger("tbay")
+
+# Control keys for the kill switch. "pause:*" stops every guarded call on
+# this database; "pause:tool:<name>" stops just that tool.
+PAUSE_ALL_KEY = "pause:*"
+
+
+def pause_tool_key(tool_name: str) -> str:
+    return f"pause:tool:{tool_name}"
 
 
 def _bind_args(fn: Callable, args: tuple, kwargs: dict) -> Dict[str, Any]:
@@ -47,16 +79,16 @@ def _hash_args(normalized_args: Dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(normalized_args, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def _redacted_args_json(normalized_args: Dict[str, Any], redact_fields) -> str:
+def _redacted_args_json(normalized_args: Dict[str, Any], pol: Policy) -> str:
     """What gets written to the audit log for this call's arguments. Anyone
     approving a WAITING_APPROVAL execution reads this, so redact anything
-    sensitive (card numbers, tokens, PII) through the policy's redact_args list."""
-    if not redact_fields:
+    sensitive (card numbers, tokens, PII) through the policy's redact_args /
+    redact_patterns / redact_auto settings (see src/tbay/redaction.py)."""
+    if not (pol.redact_args or pol.redact_patterns or pol.redact_auto):
         return json.dumps(normalized_args, sort_keys=True, default=str)
-    masked = dict(normalized_args)
-    for field_name in redact_fields:
-        if field_name in masked:
-            masked[field_name] = "***REDACTED***"
+    masked = redact_structure(
+        normalized_args, fields=pol.redact_args, patterns=pol.redact_patterns, auto=pol.redact_auto
+    )
     return json.dumps(masked, sort_keys=True, default=str)
 
 
@@ -109,13 +141,111 @@ class TbayClient:
         self.agent_meta = agent_meta
         # When set, an approval only counts if it carries a valid HMAC
         # signature made with this secret, so raw database credentials alone
-        # can no longer approve anything (see src/tbay/security.py).
+        # can no longer approve anything (see src/tbay/security.py). The same
+        # secret also signs outgoing approval webhooks (X-Tbay-Signature).
         self.approval_secret = approval_secret or os.environ.get("TBAY_APPROVAL_SECRET")
+        # Structured lifecycle events (see src/tbay/events.py). Subscribe
+        # with client.on(...); handlers can never break a guarded call.
+        self.events = EventBus()
 
     def get_policy(self, name: str) -> Policy:
         if name not in self.policies:
             raise KeyError(f"unknown policy {name!r}; known policies: {sorted(self.policies)}")
         return self.policies[name]
+
+    # -- observability: event subscription --
+
+    def on(self, handler: Optional[Handler] = None, *, events: Optional[Iterable[str]] = None):
+        """Subscribe a handler to this client's lifecycle events.
+
+            @client.on
+            def all_events(event): ...
+
+            @client.on(events=[tbay.events.CALL_FAILED])
+            def only_failures(event): ...
+
+            client.on(my_handler)   # plain call works too
+
+        Handlers run synchronously and their exceptions are logged and
+        swallowed, never raised into the guarded call. Returns the handler
+        (or a registering decorator), so `client.off(handler)` can remove it."""
+        if handler is None:
+            return lambda h: self.events.subscribe(h, events)
+        return self.events.subscribe(handler, events)
+
+    def off(self, handler: Handler) -> None:
+        """Remove a previously subscribed event handler."""
+        self.events.unsubscribe(handler)
+
+    def _emit(self, type_: str, *, tool_name=None, execution_id=None, tenant="", policy=None, **data) -> None:
+        if not self.events.has_subscribers:
+            return
+        self.events.emit(
+            Event(
+                type=type_,
+                tool_name=tool_name,
+                execution_id=execution_id,
+                tenant=tenant,
+                policy=policy,
+                agent_id=current_agent() or self.agent_id,
+                reasoning=current_reasoning(),
+                data=data,
+            )
+        )
+
+    # -- the kill switch --
+
+    def pause(self, tool_name: Optional[str] = None, *, reason: str = "", by: str = "") -> None:
+        """Stop every guarded call (or just `tool_name`) on this database,
+        across every process and host that shares it, until resume() is
+        called. Blocked calls raise ToolPaused immediately, before acquiring
+        anything. This is the emergency brake for a misbehaving agent."""
+        key = pause_tool_key(tool_name) if tool_name else PAUSE_ALL_KEY
+        self.backend.set_control(key, json.dumps({"reason": reason, "by": by, "at": time.time()}))
+
+    def resume(self, tool_name: Optional[str] = None) -> None:
+        """Lift a pause() for `tool_name`, or the global pause when omitted."""
+        key = pause_tool_key(tool_name) if tool_name else PAUSE_ALL_KEY
+        self.backend.delete_control(key)
+
+    def paused(self) -> Dict[str, dict]:
+        """Active pauses, keyed by scope: "*" for the global pause, otherwise
+        the tool name. Values are {"reason", "by", "at"} dicts."""
+        out: Dict[str, dict] = {}
+        for key, raw in self.backend.list_controls().items():
+            if key == PAUSE_ALL_KEY:
+                scope = "*"
+            elif key.startswith("pause:tool:"):
+                scope = key[len("pause:tool:"):]
+            else:
+                continue
+            try:
+                out[scope] = json.loads(raw)
+            except (TypeError, ValueError):
+                out[scope] = {"reason": raw}
+        return out
+
+    def _check_kill_switch(self, name: str, tenant: str, policy_name: str) -> None:
+        for scope, key in (("*", PAUSE_ALL_KEY), (name, pause_tool_key(name))):
+            raw = self.backend.get_control(key)
+            if raw is None:
+                continue
+            try:
+                info = json.loads(raw)
+            except (TypeError, ValueError):
+                info = {"reason": raw}
+            reason = (info or {}).get("reason") or ""
+            self._emit(
+                EV_KILL_SWITCH_BLOCKED, tool_name=name, tenant=tenant, policy=policy_name,
+                scope=scope, reason=reason,
+            )
+            where = "all tools" if scope == "*" else f"tool {name!r}"
+            hint = "`tbay resume`" if scope == "*" else f"`tbay resume --tool {name}`"
+            raise ToolPaused(
+                f"{name!r} was not run: tbay is paused for {where}"
+                + (f" ({reason})" if reason else "")
+                + f"; {hint} lifts the pause"
+            )
 
     # -- small helpers shared by the sync and async code paths --
 
@@ -166,6 +296,23 @@ class TbayClient:
         except (TypeError, ValueError):
             return True
 
+    def _budget_value(self, pol: Policy, name: str, normalized: Dict[str, Any]) -> Optional[float]:
+        """The metered amount this call contributes to its policy's budget.
+        A budgeted call whose metered argument is missing or non-numeric is
+        refused outright: a call that can't be measured can't be safely
+        counted against a spend cap."""
+        if not pol.budget_arg:
+            return None
+        value = normalized.get(pol.budget_arg)
+        try:
+            return float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            raise BudgetExceeded(
+                f"{name!r} was not run: its policy meters the {pol.budget_arg!r} argument against a "
+                f"budget, but this call's value ({value!r}) is missing or not numeric, so it cannot "
+                f"be counted"
+            ) from None
+
     def _resolve_agent(self):
         """(agent_id, agent_meta_json) for the current call: a surrounding
         `with tbay.agent(...)` block wins over the client-level defaults."""
@@ -194,19 +341,45 @@ class TbayClient:
         approval = self.backend.get_approval(execution_id) or {}
         return verify_approval(self.approval_secret, execution_id, True, approval.get("signature"))
 
-    def _fire_webhook(self, url: str, execution_id: str, tool_name: str) -> None:
+    def _fire_webhook(
+        self, url: str, execution_id: str, tool_name: str, *,
+        tenant: str = "", policy: Optional[str] = None, args_json: Optional[str] = None,
+        reasoning: Optional[str] = None, agent_id: Optional[str] = None,
+    ) -> None:
         # Best effort only. If this fails (network blip, bad URL, whatever),
         # the execution still sits in WAITING_APPROVAL and `tbay approve`
         # still works. The webhook is just a convenience notification, not
         # something approval depends on to function.
+        #
+        # The payload carries everything an approval surface needs to render
+        # a decision without a database round trip; args_json is the already-
+        # redacted audit-log form, so nothing masked can leak here either.
+        # With an approval secret configured, the body is HMAC-signed
+        # (X-Tbay-Signature; verify with tbay.security.verify_webhook).
         try:
-            import urllib.request
-
-            data = json.dumps({"execution_id": execution_id, "tool_name": tool_name}).encode()
-            req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+            scheme = urllib.parse.urlparse(url).scheme
+            if scheme not in ("http", "https"):
+                logger.warning("approval_webhook %r ignored: only http(s) URLs are allowed", url)
+                return
+            payload = {
+                "event": "approval.requested",
+                "execution_id": execution_id,
+                "tool_name": tool_name,
+                "tenant": tenant,
+                "policy": policy,
+                "args": args_json,
+                "reasoning": reasoning,
+                "agent_id": agent_id,
+                "ts": time.time(),
+            }
+            data = json.dumps(payload, sort_keys=True).encode()
+            headers = {"Content-Type": "application/json", "X-Tbay-Event": "approval.requested"}
+            if self.approval_secret:
+                headers["X-Tbay-Signature"] = sign_webhook(self.approval_secret, data)
+            req = urllib.request.Request(url, data=data, headers=headers)
             urllib.request.urlopen(req, timeout=5)
         except Exception:
-            pass
+            logger.warning("approval_webhook %r failed; approval still works via the CLI/dashboard", url)
 
     def _enforce_rate_limit(self, pol: Policy, name: str, tenant: str) -> None:
         if not pol.rate_limit_max_calls:
@@ -217,21 +390,45 @@ class TbayClient:
         since = time.time() - pol.rate_limit_window
         count = self.backend.count_since(name, tenant, since)
         if count > pol.rate_limit_max_calls:
+            self._emit(EV_RATE_LIMITED, tool_name=name, tenant=tenant, policy=pol.name, count=count)
             raise RateLimitExceeded(
                 f"{name!r} has already been called {count} times in the last "
                 f"{pol.rate_limit_window:.0f}s (limit is {pol.rate_limit_max_calls})"
             )
 
-    def _guard_rate_limit(self, record, pol: Policy, name: str, tenant: str) -> None:
+    def _enforce_budget(self, pol: Policy, name: str, tenant: str) -> None:
+        if pol.budget_max is None:
+            return
+        # Like the rate limit, this runs after acquire_or_get() inserted this
+        # call's own row (with its budget_value), so the sum includes it and
+        # ">" makes the cap inclusive: a call landing exactly on budget_max
+        # still runs, the first one past it doesn't.
+        since = time.time() - (pol.budget_window or 0.0)
+        spent = self.backend.sum_budget_since(name, tenant, since)
+        if spent > pol.budget_max:
+            self._emit(
+                EV_BUDGET_EXCEEDED, tool_name=name, tenant=tenant, policy=pol.name,
+                spent=spent, budget_max=pol.budget_max,
+            )
+            raise BudgetExceeded(
+                f"{name!r} was not run: {pol.budget_arg!r} would total {spent:g} over the last "
+                f"{(pol.budget_window or 0.0):.0f}s, past the budget of {pol.budget_max:g}"
+            )
+
+    def _enforce_limits(self, pol: Policy, name: str, tenant: str) -> None:
+        self._enforce_rate_limit(pol, name, tenant)
+        self._enforce_budget(pol, name, tenant)
+
+    def _guard_limits(self, record, pol: Policy, name: str, tenant: str) -> None:
         try:
-            self._enforce_rate_limit(pol, name, tenant)
+            self._enforce_limits(pol, name, tenant)
         except Exception as exc:
             self.backend.fail(record.id, str(exc))
             raise
 
-    async def _guard_rate_limit_async(self, record, pol: Policy, name: str, tenant: str) -> None:
+    async def _guard_limits_async(self, record, pol: Policy, name: str, tenant: str) -> None:
         try:
-            await asyncio.to_thread(self._enforce_rate_limit, pol, name, tenant)
+            await asyncio.to_thread(self._enforce_limits, pol, name, tenant)
         except Exception as exc:
             await asyncio.to_thread(self.backend.fail, record.id, str(exc))
             raise
@@ -239,7 +436,8 @@ class TbayClient:
     def _acquire_gated(self, pol: Policy, tool_name: str, idempotency_key: str, tenant: str,
                         policy_name: str, args_hash: str, args_json: str,
                         embedding_json: Optional[str] = None, reasoning: Optional[str] = None,
-                        agent_id: Optional[str] = None, agent_meta: Optional[str] = None) -> AcquireResult:
+                        agent_id: Optional[str] = None, agent_meta: Optional[str] = None,
+                        budget_value: Optional[float] = None) -> AcquireResult:
         """Call acquire_or_get(), retrying while max_concurrent holds it at
         "wait_for_slot" (see StorageBackend.acquire_or_get: the RUNNING count
         and the insert happen in one atomic step there, so this loop can't
@@ -262,10 +460,13 @@ class TbayClient:
                 reasoning=reasoning,
                 agent_id=agent_id,
                 agent_meta=agent_meta,
+                budget_value=budget_value,
+                lease_timeout=pol.lease_timeout,
             )
             if not acq.wait_for_slot:
                 return acq
             if time.time() > deadline:
+                self._emit(EV_CONCURRENCY_BLOCKED, tool_name=tool_name, tenant=tenant, policy=policy_name)
                 raise ConcurrencyLimitExceeded(
                     f"{tool_name!r} stayed at its concurrency limit ({pol.max_concurrent}) for over "
                     f"{pol.concurrency_wait_timeout:.0f}s"
@@ -277,7 +478,8 @@ class TbayClient:
                                     embedding_json: Optional[str] = None,
                                     reasoning: Optional[str] = None,
                                     agent_id: Optional[str] = None,
-                                    agent_meta: Optional[str] = None) -> AcquireResult:
+                                    agent_meta: Optional[str] = None,
+                                    budget_value: Optional[float] = None) -> AcquireResult:
         deadline = time.time() + pol.concurrency_wait_timeout
         while True:
             acq = await asyncio.to_thread(
@@ -296,10 +498,13 @@ class TbayClient:
                 reasoning=reasoning,
                 agent_id=agent_id,
                 agent_meta=agent_meta,
+                budget_value=budget_value,
+                lease_timeout=pol.lease_timeout,
             )
             if not acq.wait_for_slot:
                 return acq
             if time.time() > deadline:
+                self._emit(EV_CONCURRENCY_BLOCKED, tool_name=tool_name, tenant=tenant, policy=policy_name)
                 raise ConcurrencyLimitExceeded(
                     f"{tool_name!r} stayed at its concurrency limit ({pol.max_concurrent}) for over "
                     f"{pol.concurrency_wait_timeout:.0f}s"
@@ -312,12 +517,19 @@ class TbayClient:
         # and mark the execution FAILED. This catches ordinary hangs (a
         # stuck HTTP request); it does not guarantee the side effect never
         # happens after the timeout fires.
-        with ThreadPoolExecutor(max_workers=1) as pool:
+        #
+        # shutdown(wait=False) matters here: a `with` block (or wait=True)
+        # would join the worker thread, blocking exactly as long as the hung
+        # call it was supposed to give up on.
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
             future = pool.submit(fn, *args, **kwargs)
             try:
                 return future.result(timeout=timeout)
             except FutureTimeoutError:
                 raise ExecutionTimeout(f"{fn.__name__} did not finish within {timeout:.0f}s") from None
+        finally:
+            pool.shutdown(wait=False)
 
     # -- sync path --
 
@@ -334,78 +546,108 @@ class TbayClient:
     ) -> Any:
         pol = self.get_policy(policy)
         name = tool_name or fn.__name__
+        self._check_kill_switch(name, tenant, policy)
         normalized = _bind_args(fn, args, kwargs)
         args_hash = _hash_args(normalized)
-        args_json = _redacted_args_json(normalized, pol.redact_args)
+        args_json = _redacted_args_json(normalized, pol)
+        budget_value = self._budget_value(pol, name, normalized)
         reasoning = current_reasoning()
         agent_id, agent_meta = self._resolve_agent()
 
         if not pol.idempotent:
             return self._run_volatile(fn, pol, args, kwargs, tenant, name, args_hash, args_json, normalized,
-                                      reasoning=reasoning, agent_id=agent_id, agent_meta=agent_meta)
+                                      reasoning=reasoning, agent_id=agent_id, agent_meta=agent_meta,
+                                      budget_value=budget_value)
 
         embedding_json = None
         if pol.semantic_cache:
             embedding, hit = self._semantic_lookup(pol, name, tenant, normalized)
             if hit is not None:
+                self._emit(EV_SEMANTIC_CACHE_HIT, tool_name=name, execution_id=hit.id, tenant=tenant,
+                           policy=policy)
                 return json.loads(hit.result_json)
             embedding_json = json.dumps(embedding)
 
         idem_key = key_fn(*args, **kwargs) if key_fn else _default_key(name, normalized, tenant)
         acq = self._acquire_gated(pol, name, idem_key, tenant, policy, args_hash, args_json,
                                   embedding_json=embedding_json, reasoning=reasoning, agent_id=agent_id,
-                                  agent_meta=agent_meta)
+                                  agent_meta=agent_meta, budget_value=budget_value)
 
         if acq.use_cached:
+            self._emit(EV_CACHE_HIT, tool_name=name, execution_id=acq.record.id, tenant=tenant, policy=policy)
             return json.loads(acq.record.result_json)
         if acq.raise_stored_error:
+            self._emit(EV_CALL_FAILED, tool_name=name, execution_id=acq.record.id, tenant=tenant,
+                       policy=policy, error=acq.record.error, replayed=True)
             raise ExecutionFailed(acq.record.error)
         if acq.follow_approval:
+            self._emit(EV_SINGLEFLIGHT_COALESCED, tool_name=name, execution_id=acq.record.id, tenant=tenant,
+                       policy=policy)
             status = self.backend.wait_for_approval(acq.record.id, pol.approval_timeout, self.poll_interval)
             if status != APPROVAL_APPROVED:
                 raise ApprovalRejected(f"execution {acq.record.id} was rejected")
             final = self.backend.wait_for_result(acq.record.id, pol.approval_timeout, self.poll_interval)
             return self._resolve(final)
         if acq.follow_running:
+            self._emit(EV_SINGLEFLIGHT_COALESCED, tool_name=name, execution_id=acq.record.id, tenant=tenant,
+                       policy=policy)
             final = self.backend.wait_for_result(acq.record.id, 3600.0, self.poll_interval)
             return self._resolve(final)
 
         # We own the lease: this is a genuine new execution, so the rate
-        # limit applies now. (Its own row already exists at this point, so
-        # a rejection here has to mark it FAILED, or it would sit RUNNING
-        # forever and hang any later caller with the same idempotency key.)
-        self._guard_rate_limit(acq.record, pol, name, tenant)
+        # limit and budget apply now. (Its own row already exists at this
+        # point, so a rejection here has to mark it FAILED, or it would sit
+        # RUNNING forever and hang any later caller with the same key.)
+        self._guard_limits(acq.record, pol, name, tenant)
         return self._execute_as_owner(acq.record, fn, args, kwargs, pol, name, normalized)
 
     def _execute_as_owner(
         self, record, fn: Callable, args: tuple, kwargs: dict, pol: Policy, name: str, normalized: Dict[str, Any]
     ) -> Any:
+        self._emit(EV_CALL_STARTED, tool_name=name, execution_id=record.id, tenant=record.tenant,
+                   policy=pol.name)
         if self._needs_approval(pol, normalized):
             self.backend.mark_waiting_approval(record.id)
+            self._emit(EV_APPROVAL_REQUESTED, tool_name=name, execution_id=record.id, tenant=record.tenant,
+                       policy=pol.name)
             if pol.approval_webhook:
-                self._fire_webhook(pol.approval_webhook, record.id, name)
+                self._fire_webhook(
+                    pol.approval_webhook, record.id, name, tenant=record.tenant, policy=pol.name,
+                    args_json=record.args_json, reasoning=record.reasoning, agent_id=record.agent_id,
+                )
             status = self.backend.wait_for_approval(record.id, pol.approval_timeout, self.poll_interval)
             if status != APPROVAL_APPROVED:
                 note = self._rejection_note(record.id)
                 self.backend.fail(record.id, f"rejected by approval{note}")
+                self._emit(EV_APPROVAL_REJECTED, tool_name=name, execution_id=record.id,
+                           tenant=record.tenant, policy=pol.name, note=note.lstrip(": ") or None)
                 raise ApprovalRejected(f"execution {record.id} was rejected{note}")
             if not self._verify_approval_signature(record.id):
                 self.backend.fail(record.id, "approval signature missing or invalid")
+                self._emit(EV_APPROVAL_REJECTED, tool_name=name, execution_id=record.id,
+                           tenant=record.tenant, policy=pol.name, note="approval signature missing or invalid")
                 raise ApprovalRejected(
                     f"execution {record.id} was marked approved WITHOUT a valid signature; "
                     "refusing to run (an approval secret is configured, so decisions written "
                     "straight into the database do not count)"
                 )
+            self._emit(EV_APPROVAL_APPROVED, tool_name=name, execution_id=record.id, tenant=record.tenant,
+                       policy=pol.name)
 
+        started = time.time()
         try:
             if pol.execution_timeout:
                 result = self._call_with_timeout(fn, args, kwargs, pol.execution_timeout)
             else:
                 result = fn(*args, **kwargs)
             self.backend.complete(record.id, json.dumps(result, default=str), pol.cache_ttl)
+            self._emit(EV_CALL_SUCCEEDED, tool_name=name, execution_id=record.id, tenant=record.tenant,
+                       policy=pol.name, duration_s=time.time() - started)
             return result
         except Exception as exc:
             self.backend.fail(record.id, str(exc))
+            self._emit(EV_CALL_FAILED, tool_name=name, execution_id=record.id, tenant=record.tenant,
+                       policy=pol.name, error=str(exc), replayed=False)
             raise
 
     def _run_volatile(
@@ -422,6 +664,7 @@ class TbayClient:
         reasoning: Optional[str] = None,
         agent_id: Optional[str] = None,
         agent_meta: Optional[str] = None,
+        budget_value: Optional[float] = None,
     ) -> Any:
         """Path for idempotent=False policies: an LLM call used to decide
         something, "roll a die", "get the current time". Every call gets its
@@ -433,8 +676,9 @@ class TbayClient:
         while True:
             execution_id = str(uuid.uuid4())
             acq = self._acquire_gated(pol, name, execution_id, tenant, pol.name, args_hash, args_json,
-                                      reasoning=reasoning, agent_id=agent_id, agent_meta=agent_meta)
-            self._guard_rate_limit(acq.record, pol, name, tenant)
+                                      reasoning=reasoning, agent_id=agent_id, agent_meta=agent_meta,
+                                      budget_value=budget_value)
+            self._guard_limits(acq.record, pol, name, tenant)
             try:
                 return self._execute_as_owner(acq.record, fn, args, kwargs, pol, name, normalized)
             except Exception:
@@ -459,67 +703,94 @@ class TbayClient:
     ) -> Any:
         pol = self.get_policy(policy)
         name = tool_name or fn.__name__
+        await asyncio.to_thread(self._check_kill_switch, name, tenant, policy)
         normalized = _bind_args(fn, args, kwargs)
         args_hash = _hash_args(normalized)
-        args_json = _redacted_args_json(normalized, pol.redact_args)
+        args_json = _redacted_args_json(normalized, pol)
+        budget_value = self._budget_value(pol, name, normalized)
         reasoning = current_reasoning()
         agent_id, agent_meta = self._resolve_agent()
 
         if not pol.idempotent:
             return await self._run_volatile_async(
                 fn, pol, args, kwargs, tenant, name, args_hash, args_json, normalized,
-                reasoning=reasoning, agent_id=agent_id, agent_meta=agent_meta
+                reasoning=reasoning, agent_id=agent_id, agent_meta=agent_meta, budget_value=budget_value
             )
 
         embedding_json = None
         if pol.semantic_cache:
             embedding, hit = await asyncio.to_thread(self._semantic_lookup, pol, name, tenant, normalized)
             if hit is not None:
+                self._emit(EV_SEMANTIC_CACHE_HIT, tool_name=name, execution_id=hit.id, tenant=tenant,
+                           policy=policy)
                 return json.loads(hit.result_json)
             embedding_json = json.dumps(embedding)
 
         idem_key = key_fn(*args, **kwargs) if key_fn else _default_key(name, normalized, tenant)
         acq = await self._acquire_gated_async(pol, name, idem_key, tenant, policy, args_hash, args_json,
                                               embedding_json=embedding_json, reasoning=reasoning,
-                                              agent_id=agent_id, agent_meta=agent_meta)
+                                              agent_id=agent_id, agent_meta=agent_meta,
+                                              budget_value=budget_value)
 
         if acq.use_cached:
+            self._emit(EV_CACHE_HIT, tool_name=name, execution_id=acq.record.id, tenant=tenant, policy=policy)
             return json.loads(acq.record.result_json)
         if acq.raise_stored_error:
+            self._emit(EV_CALL_FAILED, tool_name=name, execution_id=acq.record.id, tenant=tenant,
+                       policy=policy, error=acq.record.error, replayed=True)
             raise ExecutionFailed(acq.record.error)
         if acq.follow_approval:
+            self._emit(EV_SINGLEFLIGHT_COALESCED, tool_name=name, execution_id=acq.record.id, tenant=tenant,
+                       policy=policy)
             status = await self._await_approval(acq.record.id, pol.approval_timeout)
             if status != APPROVAL_APPROVED:
                 raise ApprovalRejected(f"execution {acq.record.id} was rejected")
             final = await self._await_result(acq.record.id, pol.approval_timeout)
             return self._resolve(final)
         if acq.follow_running:
+            self._emit(EV_SINGLEFLIGHT_COALESCED, tool_name=name, execution_id=acq.record.id, tenant=tenant,
+                       policy=policy)
             final = await self._await_result(acq.record.id, 3600.0)
             return self._resolve(final)
 
-        await self._guard_rate_limit_async(acq.record, pol, name, tenant)
+        await self._guard_limits_async(acq.record, pol, name, tenant)
         return await self._execute_as_owner_async(acq.record, fn, args, kwargs, pol, name, normalized)
 
     async def _execute_as_owner_async(
         self, record, fn, args, kwargs, pol: Policy, name: str, normalized: Dict[str, Any]
     ) -> Any:
+        self._emit(EV_CALL_STARTED, tool_name=name, execution_id=record.id, tenant=record.tenant,
+                   policy=pol.name)
         if self._needs_approval(pol, normalized):
             await asyncio.to_thread(self.backend.mark_waiting_approval, record.id)
+            self._emit(EV_APPROVAL_REQUESTED, tool_name=name, execution_id=record.id, tenant=record.tenant,
+                       policy=pol.name)
             if pol.approval_webhook:
-                await asyncio.to_thread(self._fire_webhook, pol.approval_webhook, record.id, name)
+                await asyncio.to_thread(
+                    self._fire_webhook, pol.approval_webhook, record.id, name,
+                    tenant=record.tenant, policy=pol.name, args_json=record.args_json,
+                    reasoning=record.reasoning, agent_id=record.agent_id,
+                )
             status = await self._await_approval(record.id, pol.approval_timeout)
             if status != APPROVAL_APPROVED:
                 note = await asyncio.to_thread(self._rejection_note, record.id)
                 await asyncio.to_thread(self.backend.fail, record.id, f"rejected by approval{note}")
+                self._emit(EV_APPROVAL_REJECTED, tool_name=name, execution_id=record.id,
+                           tenant=record.tenant, policy=pol.name, note=note.lstrip(": ") or None)
                 raise ApprovalRejected(f"execution {record.id} was rejected{note}")
             if not await asyncio.to_thread(self._verify_approval_signature, record.id):
                 await asyncio.to_thread(self.backend.fail, record.id, "approval signature missing or invalid")
+                self._emit(EV_APPROVAL_REJECTED, tool_name=name, execution_id=record.id,
+                           tenant=record.tenant, policy=pol.name, note="approval signature missing or invalid")
                 raise ApprovalRejected(
                     f"execution {record.id} was marked approved WITHOUT a valid signature; "
                     "refusing to run (an approval secret is configured, so decisions written "
                     "straight into the database do not count)"
                 )
+            self._emit(EV_APPROVAL_APPROVED, tool_name=name, execution_id=record.id, tenant=record.tenant,
+                       policy=pol.name)
 
+        started = time.time()
         try:
             if pol.execution_timeout:
                 result = await asyncio.wait_for(fn(*args, **kwargs), timeout=pol.execution_timeout)
@@ -528,13 +799,19 @@ class TbayClient:
             await asyncio.to_thread(
                 self.backend.complete, record.id, json.dumps(result, default=str), pol.cache_ttl
             )
+            self._emit(EV_CALL_SUCCEEDED, tool_name=name, execution_id=record.id, tenant=record.tenant,
+                       policy=pol.name, duration_s=time.time() - started)
             return result
         except asyncio.TimeoutError:
             message = f"{fn.__name__} did not finish within {pol.execution_timeout:.0f}s"
             await asyncio.to_thread(self.backend.fail, record.id, message)
+            self._emit(EV_CALL_FAILED, tool_name=name, execution_id=record.id, tenant=record.tenant,
+                       policy=pol.name, error=message, replayed=False)
             raise ExecutionTimeout(message) from None
         except Exception as exc:
             await asyncio.to_thread(self.backend.fail, record.id, str(exc))
+            self._emit(EV_CALL_FAILED, tool_name=name, execution_id=record.id, tenant=record.tenant,
+                       policy=pol.name, error=str(exc), replayed=False)
             raise
 
     async def _run_volatile_async(
@@ -551,14 +828,15 @@ class TbayClient:
         reasoning: Optional[str] = None,
         agent_id: Optional[str] = None,
         agent_meta: Optional[str] = None,
+        budget_value: Optional[float] = None,
     ) -> Any:
         attempt = 0
         while True:
             execution_id = str(uuid.uuid4())
             acq = await self._acquire_gated_async(pol, name, execution_id, tenant, pol.name, args_hash,
                                                   args_json, reasoning=reasoning, agent_id=agent_id,
-                                                  agent_meta=agent_meta)
-            await self._guard_rate_limit_async(acq.record, pol, name, tenant)
+                                                  agent_meta=agent_meta, budget_value=budget_value)
+            await self._guard_limits_async(acq.record, pol, name, tenant)
             try:
                 return await self._execute_as_owner_async(acq.record, fn, args, kwargs, pol, name, normalized)
             except Exception:

@@ -38,3 +38,18 @@ class ConcurrencyLimitExceeded(TbayError):
     """Waited for a free execution slot under this tool's max_concurrent cap
     and one never opened up. Either raise the cap or reduce how many callers
     hit this tool at the same time."""
+
+
+class ToolPaused(TbayError):
+    """The kill switch is on: someone ran `tbay pause` (globally or just for
+    this tool), so tbay refused to start the call at all. `tbay resume`
+    turns things back on. The pause reason, if one was given, is included
+    in the message."""
+
+
+class BudgetExceeded(TbayError):
+    """Running this call would push the total of the tool's metered argument
+    (the policy's budget.arg, e.g. `amount`) past budget.max within the
+    budget window. The tool never ran. Also raised when the metered argument
+    is missing or not numeric, since a call that can't be measured can't be
+    safely counted against a spend cap."""

@@ -12,7 +12,6 @@ import pytest
 
 from tbay import ApprovalRejected, TbayClient, agent, guarded, sign_approval
 
-
 # -- agent identity ------------------------------------------------------------
 
 

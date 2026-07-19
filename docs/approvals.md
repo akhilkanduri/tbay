@@ -12,9 +12,11 @@ Using `refund_customer("cust_2", 500.0)` under the `destructive` policy:
    `pending` approvals row. The function has not run; that is the entire
    guarantee, since tbay pauses while it still has control.
 4. **Notify.** If the policy has `approval_webhook`, one HTTP POST fires
-   with `{"execution_id": ..., "tool_name": ...}`. Best effort only: a
-   dead webhook never strands a call, and the decision never travels
-   through it.
+   carrying everything an approval surface needs to render a decision:
+   the execution id, tool, tenant, policy, (redacted) arguments, the
+   requesting agent, and its stated reasoning. Best effort only: a dead
+   webhook never strands a call, and the decision never travels through
+   it.
 5. **Block and poll.** The caller blocks, re-reading the approvals row
    every `poll_interval` for up to `approval_timeout`.
 6. **A human decides**, through any surface that writes the row:
@@ -96,9 +98,40 @@ roles for the rest.
 
 ## Webhooks in detail
 
-The POST body is `{"execution_id": "...", "tool_name": "..."}`. Look the
-execution up with `tbay log --tool <tool_name>` (or the dashboard) to see
-its possibly-redacted arguments, the requesting agent, and its stated
-reasoning before deciding. The request has a 5-second timeout and all
-failures are silently ignored; approval and rejection work identically
-whether or not the webhook ever arrived.
+The POST body is JSON:
+
+```json
+{
+  "event": "approval.requested",
+  "execution_id": "87a2a853-...",
+  "tool_name": "refund_customer",
+  "tenant": "",
+  "policy": "destructive",
+  "args": "{\"amount\": 500.0, \"card_number\": \"***REDACTED***\"}",
+  "reasoning": "customer 42 reported item damaged in transit",
+  "agent_id": "billing-agent-7",
+  "ts": 1752900000.0
+}
+```
+
+`args` is the audit-log form, **post-redaction**, so nothing a policy
+masks can leak through a webhook either. The request has a 5-second
+timeout and all failures are logged and ignored; approval and rejection
+work identically whether or not the webhook ever arrived.
+
+Two hardening properties worth knowing:
+
+- **Scheme allowlist.** Only `http://` and `https://` URLs ever fire.
+  A policy file is configuration, and configuration must not be able to
+  turn the executing client into a `file://` writer or similar.
+- **Signatures.** With an approval secret configured, the request carries
+  `X-Tbay-Signature: sha256=<hmac>` over the exact body. Anyone can POST
+  to your webhook endpoint; only a secret holder can sign. Verify on the
+  receiving end:
+
+  ```python
+  from tbay import verify_webhook
+
+  if not verify_webhook(secret, raw_body, request.headers.get("X-Tbay-Signature")):
+      return 403
+  ```

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tbay"
-version = "0.2.0"
-description = "Execution safety for AI agent tool calls: idempotency, semantic caching, singleflight, policy, approval gating, and a reasoning-linked audit log, as a library, not a service."
+version = "0.3.0"
+description = "Execution safety for AI agent tool calls: idempotency, semantic caching, singleflight, policy, budgets, a kill switch, approval gating, and a reasoning-linked audit log, as a library, not a service."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
@@ -16,17 +16,45 @@ dependencies = [
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
+    "Typing :: Typed",
 ]
 
 [project.optional-dependencies]
 postgres = ["psycopg2-binary>=2.9"]
 redis = ["redis>=4.2"]
-dev = ["pytest>=7.4", "psycopg2-binary>=2.9", "redis>=4.2"]
+otel = ["opentelemetry-api>=1.20"]
+dev = [
+    "pytest>=7.4",
+    "psycopg2-binary>=2.9",
+    "redis>=4.2",
+    "opentelemetry-sdk>=1.20",
+    "ruff>=0.4",
+]
 
 [project.scripts]
 tbay = "tbay.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+tbay = ["py.typed"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["UP006", "UP007", "UP035", "UP045"]  # keep 3.9-compatible typing syntax
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
