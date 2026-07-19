@@ -1,6 +1,6 @@
 # tbay
 
-[![installs](https://static.pepy.tech/personalized-badge/saeligram?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=yellow&left_text=Downloads)](https://pepy.tech/projects/saeligram) ![GitHub stars](https://img.shields.io/github/stars/akhilkanduri/tbay)
+[![installs](https://static.pepy.tech/personalized-badge/tbay?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=yellow&left_text=Downloads)](https://pepy.tech/projects/tbay) ![GitHub stars](https://img.shields.io/github/stars/akhilkanduri/tbay)
 
 
 Execution safety for AI agent tool calls: idempotency, TTL and semantic
