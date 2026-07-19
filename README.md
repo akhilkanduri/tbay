@@ -71,6 +71,8 @@ pip install tbay[redis]        # + Redis
 | Guide | What it covers |
 |---|---|
 | [Quickstart](docs/quickstart.md) | First guarded tool, the dev container, running the demo |
+| [Tutorial](examples/tutorial/README.md) | 13 runnable, narrated scripts: every feature, step by step, SQLite-only |
+| [Design rationale](docs/design.md) | Why each mechanism works the way it does |
 | [Policies](docs/policies.md) | The four risk tiers, the YAML file, every policy field |
 | [Caching and idempotency](docs/caching.md) | Idempotency keys, TTL, singleflight, semantic caching, volatile calls, rate limits |
 | [Approvals](docs/approvals.md) | Pause/approve flow, signed webhooks, bypass thresholds, signed approvals, rejection reasons |

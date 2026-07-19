@@ -48,9 +48,16 @@ and no existing API changed shape.
   blocks until the hung call eventually finishes (the ThreadPoolExecutor
   context manager joined the worker thread); it now returns as soon as
   the timeout fires.
-- **Policy typo detection**: unknown keys in a policy file are rejected
-  at load time with the list of valid keys, instead of being silently
-  ignored.
+- **Policy files fail loud**: unknown keys are rejected at load time
+  with the list of valid keys; a `rate_limit` must have both `max_calls`
+  and `per` (half a rate limit previously crashed at call time with a
+  bare TypeError); a `budget` must have `arg`/`max`/`per`; and
+  `approval_bypass_arg`/`approval_bypass_max` must be set together (one
+  without the other previously meant the bypass silently never fired).
+- **Tutorial series** (`examples/tutorial/`): 13 runnable, narrated,
+  self-verifying scripts covering every feature step by step against
+  throwaway SQLite databases, plus `docs/design.md` explaining the
+  reasoning behind each design decision.
 - **CLI**: new `pending` (everything awaiting a human, oldest first, with
   args/agent/reasoning), `show <id>` (full record + approval row),
   `stats` (counts by status/tool + active pauses), `export` (audit log as

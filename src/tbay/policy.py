@@ -169,11 +169,27 @@ def _build_policy(name: str, cfg: dict) -> Policy:
         )
 
     rate_limit = cfg.get("rate_limit") or {}
+    if rate_limit and not ({"max_calls", "per"} <= set(rate_limit)):
+        raise ValueError(
+            f"policy {name!r}: a rate_limit needs both `max_calls` and `per` "
+            f"(the window, e.g. '1m'); got {sorted(rate_limit)}. Half a rate "
+            f"limit would either crash at call time or silently not limit."
+        )
+
     budget = cfg.get("budget") or {}
     if budget and not ({"arg", "max", "per"} <= set(budget)):
         raise ValueError(
             f"policy {name!r}: a budget needs all of `arg` (the numeric argument "
             f"to meter), `max` (the cap), and `per` (the window, e.g. '1d'); got {sorted(budget)}"
+        )
+
+    # approval_bypass_arg without approval_bypass_max would silently require
+    # approval for EVERY call — the bypass the author configured would never
+    # fire, with no error anywhere. Demand both or neither.
+    if (cfg.get("approval_bypass_arg") is None) != (cfg.get("approval_bypass_max") is None):
+        raise ValueError(
+            f"policy {name!r}: approval_bypass_arg and approval_bypass_max must be "
+            f"set together; one without the other means the bypass never applies."
         )
 
     max_retries = cfg.get("max_retries")
