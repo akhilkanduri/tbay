@@ -1,0 +1,45 @@
+name: Bug report
+description: Something behaved differently than documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report! If this is a **security issue** (a guardrail
+        that can be bypassed, a redaction leak), please use
+        **Security → Report a vulnerability** instead of a public issue.
+  - type: input
+    id: version
+    attributes:
+      label: tbay version
+      placeholder: "0.3.0 (pip show tbay)"
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Storage backend
+      options: [SQLite, Postgres, Redis, several/other]
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: The smallest script that shows the problem. The tutorial helpers (examples/tutorial/_tutorial_helpers.py) make throwaway-database repros easy.
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: policy
+    attributes:
+      label: Relevant policy configuration
+      description: The policy YAML (or in-code Policy) attached to the affected tool, redacted as needed.
+      render: yaml
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect, and what happened instead?
+      description: Include `tbay show <execution_id>` / `tbay log` output where relevant.
+    validations:
+      required: true

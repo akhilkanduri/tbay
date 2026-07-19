@@ -1,0 +1,26 @@
+name: Feature request
+description: Propose an improvement or new capability
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The failure mode or gap
+      description: tbay features exist to prevent concrete failures. What goes wrong today without this?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What would the policy field / CLI command / API look like? A sketch is plenty.
+    validations:
+      required: true
+  - type: textarea
+    id: tradeoffs
+    attributes:
+      label: Trade-offs you can see
+      description: |
+        tbay leans conservative (fail loud, never under-count, never
+        double-run silently — see docs/design.md). How does this feature
+        pick its trade-offs?

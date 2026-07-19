@@ -1,0 +1,72 @@
+# Runs the full suite (all three backends) under coverage, and on pushes
+# to main publishes a self-hosted coverage badge to the `badges` branch —
+# no external coverage service, no extra secrets. The README references:
+#   https://raw.githubusercontent.com/akhilkanduri/tbay/badges/coverage.svg
+name: Coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: write   # needed only to push the badge branch on main
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: tbay
+          POSTGRES_DB: tbay
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run tests with coverage (SQLite + Postgres + Redis)
+        env:
+          TBAY_TEST_PG_DSN: postgresql://postgres:tbay@localhost:5432/tbay
+          TBAY_TEST_REDIS_URL: redis://localhost:6379/0
+        run: uv run pytest --cov=tbay --cov-report=xml --cov-report=term-missing:skip-covered
+
+      - name: Generate badge SVG
+        run: |
+          uv pip install "genbadge[coverage]"
+          mkdir -p badge-out
+          uv run genbadge coverage -i coverage.xml -o badge-out/coverage.svg --local
+
+      - name: Publish badge to the badges branch
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: badges
+          publish_dir: ./badge-out
+          force_orphan: true
+          commit_message: "chore: update coverage badge"

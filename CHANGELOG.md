@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- Repo health: `.github/SECURITY.md` (reporting process + the honest
+  trust-model scope), a pull-request template with a safety-behavior
+  checklist, and structured issue forms for bugs and feature requests.
+- Coverage pipeline: a workflow running the full suite (all three
+  backends) under `pytest-cov` and publishing a self-hosted coverage
+  badge to the `badges` branch — no external coverage service — now shown
+  on the README.
+- README rewritten around the **toolbay** framing: badge row, the
+  failure-mode table ("what it stops"), the plans/decides/executes
+  diagram, and direct paths into the tutorial and design docs.
+- `scripts/create_roadmap_issues.sh`: seeds the maintenance roadmap
+  (pooling, push-based waits, retention, `tbay-mcp`, per-agent budgets,
+  and more) as labeled GitHub issues via `gh`.
+
 ## 0.3.0
 
 Safety, observability, and operability for agent fleets. Fully backward
