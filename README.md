@@ -4,8 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/akhilkanduri/tbay/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/akhilkanduri/tbay/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/akhilkanduri/tbay/actions/workflows/coverage.yml"><img alt="coverage" src="https://raw.githubusercontent.com/akhilkanduri/tbay/badges/coverage.svg"></a>
-  <a href="https://pypi.org/project/tbay/"><img alt="PyPI" src="https://img.shields.io/pypi/v/tbay?color=blue"></a>
+<a href="https://pypi.org/project/tbay/"><img alt="PyPI" src="https://img.shields.io/pypi/v/tbay?color=blue"></a>
   <a href="https://pypi.org/project/tbay/"><img alt="Python versions" src="https://img.shields.io/pypi/pyversions/tbay"></a>
   <a href="https://pepy.tech/projects/tbay"><img alt="downloads" src="https://static.pepy.tech/personalized-badge/tbay?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=yellow&left_text=Downloads"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-green"></a>
