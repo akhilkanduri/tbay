@@ -384,6 +384,14 @@ class TbayClient:
     def _enforce_rate_limit(self, pol: Policy, name: str, tenant: str) -> None:
         if not pol.rate_limit_max_calls:
             return
+        if pol.rate_limit_window is None:
+            # Reachable only by setting the Policy in code (YAML validates
+            # both keys together). Fail loud: a half-configured limit that
+            # silently didn't limit would be a safety hole.
+            raise ValueError(
+                f"policy {pol.name!r} sets rate_limit_max_calls without rate_limit_window; "
+                f"set both (in YAML: rate_limit: {{max_calls: N, per: '1m'}})"
+            )
         # By the time this runs, acquire_or_get() has already inserted this
         # call's own row, so count_since() includes it. ">" (not ">=") is
         # what makes "rate_limit_max_calls: 2" actually allow 2 calls.
@@ -399,11 +407,19 @@ class TbayClient:
     def _enforce_budget(self, pol: Policy, name: str, tenant: str) -> None:
         if pol.budget_max is None:
             return
+        if pol.budget_window is None:
+            # Reachable only by setting the Policy in code (YAML validates
+            # arg/max/per together). Fail loud rather than mis-meter.
+            raise ValueError(
+                f"policy {pol.name!r} sets budget_max without budget_window; "
+                f"set all of budget_arg/budget_max/budget_window (in YAML: "
+                f"budget: {{arg: ..., max: ..., per: '1d'}})"
+            )
         # Like the rate limit, this runs after acquire_or_get() inserted this
         # call's own row (with its budget_value), so the sum includes it and
         # ">" makes the cap inclusive: a call landing exactly on budget_max
         # still runs, the first one past it doesn't.
-        since = time.time() - (pol.budget_window or 0.0)
+        since = time.time() - pol.budget_window
         spent = self.backend.sum_budget_since(name, tenant, since)
         if spent > pol.budget_max:
             self._emit(

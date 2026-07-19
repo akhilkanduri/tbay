@@ -234,9 +234,9 @@ def policies_cmd(ctx):
         if pol.approval_required:
             traits.append("approval")
         if pol.rate_limit_max_calls:
-            traits.append(f"rate={pol.rate_limit_max_calls}/{pol.rate_limit_window:g}s")
+            traits.append(f"rate={pol.rate_limit_max_calls}/{pol.rate_limit_window or 0:g}s")
         if pol.budget_max is not None:
-            traits.append(f"budget[{pol.budget_arg}]<={pol.budget_max:g}/{pol.budget_window:g}s")
+            traits.append(f"budget[{pol.budget_arg}]<={pol.budget_max:g}/{pol.budget_window or 0:g}s")
         if pol.max_concurrent:
             traits.append(f"concurrent<={pol.max_concurrent}")
         if pol.lease_timeout:

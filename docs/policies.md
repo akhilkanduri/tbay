@@ -80,10 +80,20 @@ Any policy you don't mention keeps its built-in defaults. You can also
 override in code: `client.policies["readonly"].cache_ttl = 60`. See
 `policy.example.yaml` in the repo root for a fully commented example.
 
-A policy entry containing an unknown key is **rejected at load time** with
-an error listing the valid keys. A typo like `aproval_required` would
-otherwise be silently ignored, and a silently ignored safety setting is
-the worst kind of bug.
+Policy files **fail loud** at load time rather than degrade silently,
+because a safety setting the author believes exists but doesn't is the
+worst kind of bug:
+
+- An unknown key (a typo like `aproval_required`) is rejected with the
+  list of valid keys.
+- A `rate_limit` needs both `max_calls` and `per`; half a rate limit
+  would either crash at call time or silently not limit.
+- A `budget` needs all of `arg`, `max`, and `per`.
+- `approval_bypass_arg` and `approval_bypass_max` must be set together;
+  one without the other would mean the bypass never fires, silently.
+
+The reasoning behind this (and every other design choice) is collected
+in [Design rationale](design.md).
 
 ## Every policy field
 
